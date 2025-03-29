@@ -31,24 +31,24 @@ class DuckiematrixDB21JEnv(gym.Env):
 
     def step(self, actions : Tuple) -> Tuple:
         # TODO: this is a hack to simulate rad/s to PWM conversion
-        wl = actions[0]
-        wr = actions[1]
-
-        print(f"setting pwm to {wl} and {wr}")
+        wl = actions[0]*0.4
+        wr = actions[1]*0.4
 
         self.robot.motors.set_pwm(left=wl, right=wr)
-        obs = self.robot.camera.capture()
-        if obs is None:
+        bgr = self.robot.camera.capture()
+        if bgr is None:
             print("got no image.. skipping")
-        else:
-            self.window.set_data(obs)
-            self.fig.canvas.draw_idle()
-            self.fig.canvas.start_event_loop(0.00001)
+            return None, None, None, None, None
+
+        rgb = bgr[:, :, [2,1,0]]
+        self.window.set_data(rgb)
+        self.fig.canvas.draw_idle()
+        self.fig.canvas.start_event_loop(0.00001)
 
         terminated = truncated = False
         rew = self._get_reward()
         info = self._get_info()
-        return obs, rew, terminated, truncated, info
+        return rgb, rew, terminated, truncated, info
 
     def reset(self,):
         obs = self.robot.camera.capture()
