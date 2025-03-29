@@ -1,18 +1,26 @@
-import Tuple, Dict
+from typing import Tuple, Dict
 import gymnasium as gym
 from gymnasium import spaces
-
+import numpy as np
 from duckietown.sdk.robots.duckiebot import DB21J
 
 DEFAULT_CAMERA_WIDTH = 640
 DEFAULT_CAMERA_HEIGHT = 480
 
 
-class DuckiematrixDB21JEnv(gym.Env,):
+class DuckiematrixDB21JEnv(gym.Env):
     def __init__(self, entity_name = "map_0/vehicle_0"):
+        import matplotlib.pyplot as plt
+        # create matplot window
+        self.window = plt.imshow(np.zeros((DEFAULT_CAMERA_HEIGHT, DEFAULT_CAMERA_WIDTH, 3)))
+        plt.axis("off")
+        self.fig = plt.figure(1)
+        plt.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
+        plt.pause(0.01)
+
         self._shutdown = False
         #create connection to the matrix engine
-        self.robot: DB21J = DB21J(entity_name, simulated=True)
+        self.robot: DB21J = DB21J("map_0/vehicle_0", simulated=True)
         self.robot.camera.start()
         self.robot.motors.start()
         self.action_space = spaces.Box(low=np.array([-1, -1]), high=np.array([1, 1]), dtype=np.float32)
@@ -23,14 +31,29 @@ class DuckiematrixDB21JEnv(gym.Env,):
 
     def step(self, actions : Tuple) -> Tuple:
         # TODO: this is a hack to simulate rad/s to PWM conversion
-        wl = actions[0]*0.04
-        wr = actions[1]*0.04
+        wl = actions[0]
+        wr = actions[1]
+
+        print(f"setting pwm to {wl} and {wr}")
 
         self.robot.motors.set_pwm(left=wl, right=wr)
         obs = self.robot.camera.capture()
+        if obs is None:
+            print("got no image.. skipping")
+        else:
+            self.window.set_data(obs)
+            self.fig.canvas.draw_idle()
+            self.fig.canvas.start_event_loop(0.00001)
+
         terminated = truncated = False
         rew = self._get_reward()
+        info = self._get_info()
         return obs, rew, terminated, truncated, info
+
+    def reset(self,):
+        obs = self.robot.camera.capture()
+        info = self._get_info()
+        return obs, info
 
     def _get_reward(self) -> float:
         #TODO
