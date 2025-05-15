@@ -29,7 +29,7 @@ class DuckiematrixDB21JEnv(gym.Env):
             low=0, high=255, shape=(DEFAULT_CAMERA_HEIGHT, DEFAULT_CAMERA_WIDTH, 3), dtype=np.uint8
         )
 
-        self.map = self.robot.map.capture()
+        # self.map = self.robot.map.capture()
         
         # TODO wheel encoder data? self.robot.encoder
 
@@ -40,6 +40,7 @@ class DuckiematrixDB21JEnv(gym.Env):
 
         self.robot.motors.set_pwm(left=wl, right=wr)
         bgr = self.robot.camera.capture()
+        map = self.robot.map.capture()
         if bgr is None:
             print("got no image.. skipping")
             return None, None, None, None, None
