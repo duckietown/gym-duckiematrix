@@ -45,7 +45,7 @@ class DuckiematrixDB21JEnv(gym.Env):
             print("got no image.. skipping")
             return None, None, None, None, None
         
-        print(self.map)
+        print(map)
         rgb = bgr[:, :, [2,1,0]]
         self.window.set_data(rgb)
         self.fig.canvas.draw_idle()
