@@ -23,6 +23,7 @@ class DuckiematrixDB21JEnv(gym.Env):
         self.robot: DB21J = DB21J("map_0/vehicle_0", simulated=True)
         self.robot.camera.start()
         self.robot.motors.start()
+        self.robot.map.start()
         self.action_space = spaces.Box(low=np.array([-1, -1]), high=np.array([1, 1]), dtype=np.float32)
         self.observation_space = spaces.Box(
             low=0, high=255, shape=(DEFAULT_CAMERA_HEIGHT, DEFAULT_CAMERA_WIDTH, 3), dtype=np.uint8
