@@ -29,7 +29,7 @@ class DuckiematrixDB21JEnv(gym.Env):
         )
 
         self.map = self.robot.map.capture()
-        print(self.map)
+        
         # TODO wheel encoder data? self.robot.encoder
 
     def step(self, actions : Tuple) -> Tuple:
@@ -42,7 +42,8 @@ class DuckiematrixDB21JEnv(gym.Env):
         if bgr is None:
             print("got no image.. skipping")
             return None, None, None, None, None
-
+        
+        print(self.map)
         rgb = bgr[:, :, [2,1,0]]
         self.window.set_data(rgb)
         self.fig.canvas.draw_idle()
