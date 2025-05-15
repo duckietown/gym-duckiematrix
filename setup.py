@@ -40,7 +40,7 @@ version = get_version_from_source("src/gym_duckiematrix/__init__.py")
 #     dependencies = list(filter(lambda line: not line.startswith('#'), fin.read().splitlines()))
 
 install_requires = [
-    "duckietown-sdk"
+    "duckietown-sdk @ git+https://github.com/duckietown/duckietown-sdk.git@ente-map"
 ]
 tests_require = []
 

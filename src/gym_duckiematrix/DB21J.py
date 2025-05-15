@@ -27,6 +27,9 @@ class DuckiematrixDB21JEnv(gym.Env):
         self.observation_space = spaces.Box(
             low=0, high=255, shape=(DEFAULT_CAMERA_HEIGHT, DEFAULT_CAMERA_WIDTH, 3), dtype=np.uint8
         )
+
+        self.map = self.robot.map.capture()
+        print(self.map)
         # TODO wheel encoder data? self.robot.encoder
 
     def step(self, actions : Tuple) -> Tuple:
