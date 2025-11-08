@@ -1,4 +1,4 @@
-from typing import Tuple, Dict
+from typing import Tuple, Dict, Optional
 import gymnasium as gym
 from gymnasium import spaces
 import numpy as np
@@ -6,27 +6,42 @@ from duckietown.sdk.robots.duckiebot import DB21J
 from duckietown.sdk.utils.lane_position import MapInterpreter, LanePositionCalculator
 from .utils import quaternion_to_euler
 
+
 DEFAULT_CAMERA_WIDTH = 640
 DEFAULT_CAMERA_HEIGHT = 480
 
 
 class DuckiematrixDB21JEnv(gym.Env):
-    def __init__(self, entity_name = "map_0/vehicle_0", out_of_road_penalty = -10.0):
-        import matplotlib.pyplot as plt
-        # create matplot window
-        self.window = plt.imshow(np.zeros((DEFAULT_CAMERA_HEIGHT, DEFAULT_CAMERA_WIDTH, 3)))
-        plt.axis("off")
-        self.fig = plt.figure(1)
-        plt.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
-        plt.pause(0.01)
+    def __init__(
+            self,
+            entity_name: str = "map_0/vehicle_0",
+            out_of_road_penalty: float = -10.0, 
+            headless: bool = False,
+            camera_height: int = DEFAULT_CAMERA_HEIGHT,
+            camera_width: int = DEFAULT_CAMERA_WIDTH,
+        ):
+        super().__init__()
+        if not headless:
+            import matplotlib.pyplot as plt
+            plt.ion()
+            self.fig = plt.figure(1)
+            ax = self.fig.add_subplot(111)
+            ax.axis("off")
+            self.window = ax.imshow(np.zeros((camera_height, camera_width, 3)))
+            self.fig.subplots_adjust(left=0.0, right=1.0, top=1.0, bottom=0.0)
+            self.fig.canvas.draw()
+            plt.show(block=False)
+            self.fig.canvas.flush_events()
 
-        self._shutdown = False
-        #create connection to the matrix engine
-        self.robot: DB21J = DB21J("map_0/vehicle_0", simulated=True)
-        self.initialize_sensors()
+        self.camera_height = camera_height
+        self.camera_width = camera_width
+        self.headless = headless
+        self.entity_name = entity_name
+        self.robot: DB21J = DB21J(entity_name, simulated=True)
+        self._start_components() # Will start and add components to robot
         self.action_space = spaces.Box(low=np.array([-1, -1]), high=np.array([1, 1]), dtype=np.float32)
         self.observation_space = spaces.Box(
-            low=0, high=255, shape=(DEFAULT_CAMERA_HEIGHT, DEFAULT_CAMERA_WIDTH, 3), dtype=np.uint8
+            low=0, high=255, shape=(self.camera_height, self.camera_width, 3), dtype=np.uint8
         )
         self.map = {"frames": None, "tiles": None, "tile_info": None}
         self.get_map()
@@ -35,7 +50,7 @@ class DuckiematrixDB21JEnv(gym.Env):
         self.out_of_road_penalty = out_of_road_penalty
         self.last_pose = None
 
-    def initialize_sensors(self):
+    def _start_components(self):
         self.robot.camera.start()
         self.robot.motors.start()
         self.robot.map_frames.start()
@@ -43,7 +58,16 @@ class DuckiematrixDB21JEnv(gym.Env):
         self.robot.map_tile_info.start()
         self.robot.pose.start()
         self.robot.reset_flag.start()
-        
+    
+    def _stop_components(self):
+        self.robot.reset_flag.stop()
+        self.robot.pose.stop()
+        self.robot.map_tile_info.stop()
+        self.robot.map_tiles.stop()
+        self.robot.map_frames.stop()
+        self.robot.motors.stop()
+        self.robot.camera.stop()
+
     def get_map(self):
         while True:
             if self.check_map():
@@ -61,13 +85,57 @@ class DuckiematrixDB21JEnv(gym.Env):
             if self.map[key] is None:
                 is_map = False 
         return is_map               
+    
+    def reset(self, seed: Optional[int] = None, options: Optional[dict] = None):
+        super().reset(seed=seed, options=options)
+        self.robot.reset_flag.set_reset(True)
+
+        self.last_pose = self._get_pose_blocking()
+        obs = self._get_rgb_frame_blocking()
+        info = self._get_info()
         
-        
-    def reward_fn(self, pose, last_pose):
+        self._draw_obs(obs)
+
+        return obs, info
+
+    def _get_pose_blocking(self) -> Dict:
+        pose = self.robot.pose.capture(block=True)
+        return pose
+
+    def _get_rgb_frame_blocking(self) -> np.ndarray:
+        bgr = self.robot.camera.capture(block=True)
+        rgb = bgr[:, :, [2, 1, 0]]
+        return rgb
+    
+    def _draw_obs(self, obs: np.ndarray):
+        if not self.headless:
+            self.window.set_data(obs)
+            self.fig.canvas.draw_idle()
+            self.fig.canvas.flush_events()
+
+    def step(self, actions : Tuple) -> Tuple:
+        # TODO: this is a hack to simulate rad/s to PWM conversion
+        wl = actions[0]*0.4
+        wr = actions[1]*0.4
+        self.robot.motors.set_pwm(left=wl, right=wr)
+
+        obs = self._get_rgb_frame_blocking()
+        pose = self._get_pose_blocking()
+
+        reward, terminated = self.reward_fn(pose)
+        self.last_pose = pose
+        info = self._get_info()
+        self._draw_obs(obs)
+        truncated = False
+
+        return obs, reward, terminated, truncated, info
+
+    def reward_fn(self, pose: Dict) -> Tuple[float, bool]:
+        assert self.last_pose is not None, "Last pose is None in reward function! Make sure the environment was reset initially."
+        last_pose = self.last_pose
+
         terminated = False
-        if self.last_pose is not None:
-            delta_t = float(pose["header"]["timestamp"]) - float(self.last_pose["header"]["timestamp"])
-        
+        delta_t = float(pose["header"]["timestamp"]) - float(last_pose["header"]["timestamp"])
         x, y, z = pose["position"]["x"], pose["position"]["y"], pose["position"]["z"]
         last_x, last_y, last_z = last_pose["position"]["x"], last_pose["position"]["y"], last_pose["position"]["z"]
         # Calculate speed based on position change and time delta
@@ -87,53 +155,18 @@ class DuckiematrixDB21JEnv(gym.Env):
         
         return reward, terminated
 
-    def step(self, actions : Tuple) -> Tuple:
-        # TODO: this is a hack to simulate rad/s to PWM conversion
-        wl = actions[0]*0.4
-        wr = actions[1]*0.4
-
-        self.robot.motors.set_pwm(left=wl, right=wr)
-        bgr = self.robot.camera.capture()
-        
-        if bgr is None:
-            print("got no image.. skipping")
-            return None, None, None, None, None
-        
-        pose = self.robot.pose.capture()
-        reward, terminated = self.reward_fn(pose, self.last_pose)
-        self.last_pose = pose
-
-        rgb = bgr[:, :, [2,1,0]]
-        self.window.set_data(rgb)
-        self.fig.canvas.draw_idle()
-        self.fig.canvas.start_event_loop(0.00001)
-
-        info = self._get_info()
-        return rgb, reward, terminated, False, info
-
-    def reset(self,):
-        while True:
-            self.last_pose = self.robot.pose.capture()
-            if self.last_pose is not None:
-                break
-        
-        x, y, z = self.last_pose["position"]["x"], self.last_pose["position"]["y"], self.last_pose["position"]["z"]
-        print("Intial robot position: ", x, y, z)
-        self.robot.reset_flag.set_reset(True)
-        obs = self.robot.camera.capture()
-        info = self._get_info()
-        return obs, info
-
-    def _get_reward(self) -> float:
-        #TODO
-        return 0.0
-
     def _get_info(self) -> Dict:
-        """Get the info for each robot in the environment
-
-        Returns:
-            info (Dict): A info dictionary with info for each robot
-        """
         info : Dict = {}
         return info
-
+    
+    def close(self):
+        try:
+            self._stop_components()
+        except Exception:
+            pass
+        if not self.headless:
+            try:
+                import matplotlib.pyplot as plt
+                plt.close(self.fig)
+            except Exception:
+                pass
