@@ -1,5 +1,83 @@
 
-<!-- Note: there is a "branch" in the url -->
+# Getting Started
+To get started with the gym API you need to do the following setup : 
+1. Make sure you have python 3.11 installed, other versions might or might not work but 3.11 has been tested.
+2. Install system dependencies :  
+    ```bash
+    sudo apt-get install -y libturbojpeg
+    ```
+3. Install python dependencies :  
+    ```bash
+    pip install gymnasium numpy dtps-http
+    ```
+    Install duckietown-sdk using the `ente` branch :  
+    ```bash
+    pip install git+https://github.com/duckietown/duckietown-sdk.git@ente
+    ```
+    Install the duckiematrix gym :  
+    ```bash
+    pip install git+https://github.com/duckietown/gym-duckiematrix.git
+    ```
+4. Launch the duckiematrix using `dts` :  
+    ```bash
+    dts matrix run --standalone --embedded --no-tutorial --map loop
+    ```
+    This command launches the engine locally (`--standalone`), using the default maps (`--embedded`), skips the tutorial pop-up (`--no-tutorial`) and uses the default map called loop (`--map loop`).  
+    It is possible to specify different configurations (eg: load different maps), [see the documentation for more details](https://docs.duckietown.com/ente/duckietown-manual/50-duckiematrix/getting-started/duckiematrix-first-steps.html).  
+
+5. Create the gym environment, optionally you can use gymnasium built-in wrapper [`TimeLimit`](https://gymnasium.farama.org/api/wrappers/misc_wrappers/#gymnasium.wrappers.TimeLimit) if you want to impose a maximum number of steps on a trajectory.   
+    The following code example creates the gym environment, wraps it using `TimeLimit` and executes a predefined number of random rollouts :     
+    ```python
+    from gymnasium.wrappers import TimeLimit
+    from gym_duckiematrix.DB21J import DuckiematrixDB21JEnv
+
+    def execute_random_rollout(env):
+        obs, info = env.reset()
+        done = False
+        while not done:
+            action = env.action_space.sample()
+            obs, reward, terminated, truncated, info = env.step(action)
+            done = terminated or truncated
+
+    env = TimeLimit(
+        DuckiematrixDB21JEnv(
+            entity_name="map_0/vehicle_0",
+            out_of_road_penalty=-10.0,
+            headless=False,
+            camera_height=480,
+            camera_width=640
+        ),
+        max_episode_steps=100,
+    )
+    nb_random_rollouts_for_testing_purposes = 2
+    try:
+        for _ in range(nb_random_rollouts_for_testing_purposes):
+            execute_random_rollout(env)
+    except Exception as e:
+        print("An error occurred:", e)
+    finally:
+        env.close()
+    ```
+Note :
+The `headless` parameter controls whether a graphical window opens to display frames in real time during execution.  
+Setting it to `False` disables the GUI entirely (e.g: ideal for running code on a cluster).  
+Setting it to `True` enables visualization, which is useful for debugging but may slow down execution.  
+
+The default reward function encourages the duckie to move forward along the lane and penalizes deviations from the lane center.  
+If lane lookup fails, the agent receives an out-of-road penalty and a termination signal.  
+Feel free to define your own reward function by sub-classing `DuckiematrixDB21JEnv` and write your own `reward_fn`.  
+
+If you do not want to impose a maximum number of steps, then simply create the environment without the TimeLimit wrapper :  
+```python
+env = DuckiematrixDB21JEnv(
+    entity_name="map_0/vehicle_0",
+    out_of_road_penalty=-10.0,
+    headless=False,
+    camera_height=480,
+    camera_width=640
+)
+```
+---
 
 ![CircleCI](https://circleci.com/gh/duckietown/template-library/tree/v1.svg?style=svg)
 [Details.](https://circleci.com/gh/duckietown/template-library/tree/v1)
