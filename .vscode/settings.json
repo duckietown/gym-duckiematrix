@@ -1,0 +1,15 @@
+{
+    "[python]": {
+        "editor.codeActionsOnSave": {
+            "source.fixAll": "explicit",
+            "source.organizeImports": "explicit"
+        },
+        "editor.formatOnSave": true,
+        "editor.rulers": [
+            72,
+            79
+        ]
+    },
+    "diffEditor.ignoreTrimWhitespace": false,
+    "files.trimTrailingWhitespace": true,
+}

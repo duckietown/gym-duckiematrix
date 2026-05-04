@@ -26,6 +26,7 @@ all:
 	@echo "You can try:"
 	@echo
 	@echo "  make build run"
+	@echo "  make py38-dist"
 	@echo "  make docs "
 	@echo "  make test coverage-combine coverage-report"
 	@echo "  "
@@ -66,6 +67,15 @@ build:
 
 build-no-cache:
 	docker build --no-cache -t $(tag) .
+
+py38-transform:
+	python3 tools/py38_compat.py transform
+
+py38-dist:
+	python3 tools/py38_compat.py build
+
+py38-clean:
+	rm -rf out/py38-src out/py38-dist
 
 
 test-docker: build
