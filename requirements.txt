@@ -23,3 +23,7 @@ sphinx
 sphinx-rtd-theme
 
 jupyter
+
+duckietown-messages==0.1.0
+duckietown-sdk==0.2.0
+gymnasium==1.2.0
