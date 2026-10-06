@@ -14,10 +14,6 @@ from duckietown.sdk.middleware.dtps.components import (
     DTPSWorldInput,
     DTPSWorldOutput,
 )
-from duckietown.sdk.middleware.shm.components import (
-    ShmWorldInput,
-    ShmWorldOutput,
-)
 from duckietown.sdk.robots import discover_entities
 from duckietown.sdk.robots.duckiebot import DB21M
 from duckietown.sdk.robots.duckiebot.generic import GenericDuckiebot
@@ -146,26 +142,30 @@ class GymEnvironment:
 
     @staticmethod
     def _make_world_input(host: str, port: int) -> WorldInput:
-        if os.environ.get("DTSHELL_SHM_PATH", ""):
-            return ShmWorldInput(host, port, _GYM_WORLD_TOPIC_NAME, "")
+        shm_base = os.environ.get("DTSHELL_SHM_PATH", "")
+        shm_path = shm_base + ".world_input" if shm_base else None
         return DTPSWorldInput(
             host,
             port,
             _GYM_WORLD_TOPIC_NAME,
             "",
             path_prefix=("robot",),
+            shm_path=shm_path,
+            shm_only=shm_path is not None,
         )
 
     @staticmethod
     def _make_world_output(host: str, port: int) -> WorldOutput:
-        if os.environ.get("DTSHELL_SHM_PATH", ""):
-            return ShmWorldOutput(host, port, _GYM_WORLD_TOPIC_NAME, "")
+        shm_base = os.environ.get("DTSHELL_SHM_PATH", "")
+        shm_path = shm_base + ".world_output" if shm_base else None
         return DTPSWorldOutput(
             host,
             port,
             _GYM_WORLD_TOPIC_NAME,
             "",
             path_prefix=("robot",),
+            shm_path=shm_path,
+            shm_only=shm_path is not None,
         )
 
     @property

@@ -13,10 +13,6 @@ from duckietown.sdk.middleware.dtps.components import (
     DTPSWorldInput,
     DTPSWorldOutput,
 )
-from duckietown.sdk.middleware.shm.components import (
-    ShmWorldInput,
-    ShmWorldOutput,
-)
 from duckietown.sdk.robots.duckiebot import DB21J
 from duckietown.sdk.utils.exceptions import PointError, TangentVectorError
 from duckietown.sdk.utils.jpeg import JPEG
@@ -109,36 +105,30 @@ class DuckiematrixDB21JEnv(Env):
 
     @staticmethod
     def _make_world_input() -> WorldInput:
-        if os.environ.get("DTSHELL_SHM_PATH", ""):
-            return ShmWorldInput(
-                _ENGINE_HOST,
-                _ENGINE_PORT,
-                _GYM_WORLD_TOPIC_NAME,
-                "",
-            )
+        shm_base = os.environ.get("DTSHELL_SHM_PATH", "")
+        shm_path = shm_base + ".world_input" if shm_base else None
         return DTPSWorldInput(
             _ENGINE_HOST,
             _ENGINE_PORT,
             _GYM_WORLD_TOPIC_NAME,
             "",
             path_prefix=("robot",),
+            shm_path=shm_path,
+            shm_only=shm_path is not None,
         )
 
     @staticmethod
     def _make_world_output() -> WorldOutput:
-        if os.environ.get("DTSHELL_SHM_PATH", ""):
-            return ShmWorldOutput(
-                _ENGINE_HOST,
-                _ENGINE_PORT,
-                _GYM_WORLD_TOPIC_NAME,
-                "",
-            )
+        shm_base = os.environ.get("DTSHELL_SHM_PATH", "")
+        shm_path = shm_base + ".world_output" if shm_base else None
         return DTPSWorldOutput(
             _ENGINE_HOST,
             _ENGINE_PORT,
             _GYM_WORLD_TOPIC_NAME,
             "",
             path_prefix=("robot",),
+            shm_path=shm_path,
+            shm_only=shm_path is not None,
         )
 
     @staticmethod

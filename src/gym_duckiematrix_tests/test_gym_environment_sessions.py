@@ -1,23 +1,38 @@
 """Unit tests for GymEnvironment global world-session handling."""
 
+import os
 import unittest
-from threading import Lock
+from collections.abc import Callable
+from pathlib import Path
+from runpy import run_path
+from threading import Event, Thread, current_thread
 from typing import Any, cast
+from unittest.mock import Mock, patch
 
-from duckietown.sdk.robots.duckiebot import DB21M
+import pytest
 
+from gym_duckiematrix.db21j_env import DuckiematrixDB21JEnv
 from gym_duckiematrix.gym_environment import GymEnvironment
 
 
 class _FakeWorldInput:
     def __init__(self) -> None:
-        self.callback = None
-        self.current_session_id = None
+        self.callback: Callable[[dict[str, Any]], None] | None = None
+        self.current_session_id: int | None = None
         self.started = 0
         self.stopped = 0
 
-    def attach(self, callback) -> None:
+    def attach(self, callback: Callable[[dict[str, Any]], None]) -> None:
         self.callback = callback
+
+    def emit(self, message: dict[str, Any]) -> None:
+        session_id = message.get("session_id")
+        self.current_session_id = (
+            session_id if isinstance(session_id, int) else None
+        )
+        if self.callback is None:
+            pytest.fail("No world-input callback has been attached.")
+        self.callback(message)
 
     def start(self) -> None:
         self.started += 1
@@ -28,11 +43,11 @@ class _FakeWorldInput:
 
 class _FakeWorldOutput:
     def __init__(self) -> None:
-        self.published: list = []
+        self.published: list[dict[str, Any]] = []
         self.started = 0
         self.stopped = 0
 
-    def publish(self, message) -> None:
+    def publish(self, message: dict[str, Any]) -> None:
         self.published.append(message)
 
     def start(self) -> None:
@@ -42,62 +57,180 @@ class _FakeWorldOutput:
         self.stopped += 1
 
 
-class _FakeVehicle(DB21M):
-    def __init__(self, name: str) -> None:
-        super().__init__(name, simulated=True, gym_mode=True)
+def _make_environment() -> tuple[
+    GymEnvironment, _FakeWorldInput, _FakeWorldOutput,
+]:
+    world_input = _FakeWorldInput()
+    world_output = _FakeWorldOutput()
+    with (
+        patch(
+            "gym_duckiematrix.gym_environment.discover_entities",
+            return_value=(["vehicle_a", "vehicle_b"], ["watchtower"]),
+        ),
+        patch(
+            "gym_duckiematrix.gym_environment.DTPSWorldInput",
+            return_value=world_input,
+        ),
+        patch(
+            "gym_duckiematrix.gym_environment.DTPSWorldOutput",
+            return_value=world_output,
+        ),
+    ):
+        environment = GymEnvironment()
+    return environment, world_input, world_output
 
 
-def _make_environment() -> GymEnvironment:
-    environment = GymEnvironment.__new__(GymEnvironment)
-    environment._all_names = ["vehicle_a", "vehicle_b", "watchtower"]
-    environment._callback = None
-    environment._last_completed_session_id = None
-    environment._lock = Lock()
-    environment._static_names = ["watchtower"]
-    environment._vehicle_names = ["vehicle_a", "vehicle_b"]
-    environment._vehicles = {
-        "vehicle_a": _FakeVehicle("vehicle_a"),
-        "vehicle_b": _FakeVehicle("vehicle_b"),
-    }
-    environment._world_input = _FakeWorldInput()
-    environment._world_output = _FakeWorldOutput()
-    return environment
+def _check_equal(actual: object, expected: object) -> None:
+    if actual != expected:
+        message = f"Expected {expected!r}, received {actual!r}."
+        pytest.fail(message)
 
 
 class GymEnvironmentSessionTests(unittest.TestCase):
-    def test_deduplicates_completed_world_sessions(self) -> None:
-        environment = _make_environment()
-        callbacks: list[dict] = []
-        environment._callback = callbacks.append
+    """Check session routing and script cleanup through public APIs."""
 
-        environment._world_input_callback({"session_id": 2, "payload": "a"})
-        environment._world_input_callback({"session_id": 2, "payload": "b"})
-        environment._world_input_callback(
-            {"session_id": 1, "payload": "stale"},
+    def test_gym_mode_stops_on_main_thread_after_last_cycle(self) -> None:
+        """Stop the script outside its callback thread."""
+        expected_count = 2
+        environment = Mock(spec=GymEnvironment)
+        environment.vehicle_names = ["vehicle_a"]
+        environment.duckiebot_names = ["vehicle_a"]
+        environment.static_names = []
+        callback_stop = Event()
+        main_thread = current_thread()
+
+        def send_inputs() -> None:
+            callback = environment.attach.call_args.args[0]
+            for session_id in (1, 2, 3):
+                callback({"session_id": session_id})
+
+        def stop() -> None:
+            if current_thread() is not main_thread:
+                callback_stop.set()
+
+        worker = Thread(target=send_inputs, daemon=True)
+        self.addCleanup(worker.join, 2.0)
+        environment.start.side_effect = worker.start
+        environment.stop.side_effect = stop
+        script = Path(__file__).with_name("test_gym_mode.py")
+        with (
+            patch.dict(
+                os.environ,
+                {
+                    "MAX_COUNT": str(expected_count),
+                    "WAIT_TIMEOUT_SECONDS": "1",
+                },
+            ),
+            patch(
+                "gym_duckiematrix.gym_environment.GymEnvironment",
+                return_value=environment,
+            ),
+        ):
+            result = run_path(str(script), run_name="__main__")
+        worker.join(timeout=2.0)
+        if worker.is_alive():
+            pytest.fail("The callback worker did not stop.")
+        if callback_stop.is_set():
+            pytest.fail("Environment shutdown ran on the callback thread.")
+        _check_equal(result["state"].count, expected_count)
+        if not result["event"].is_set():
+            pytest.fail("The final cycle did not signal completion.")
+        _check_equal(environment.step.call_count, expected_count)
+        environment.stop.assert_called_once_with()
+
+    def test_gym_mode_cleans_up_after_keyboard_interrupt(self) -> None:
+        """Clean up when the wait is interrupted."""
+        environment = Mock(spec=GymEnvironment)
+        environment.vehicle_names = ["vehicle_a"]
+        environment.static_names = []
+        completion = Mock(spec=Event)
+        completion.wait.side_effect = KeyboardInterrupt
+        script = Path(__file__).with_name("test_gym_mode.py")
+        with (
+            patch(
+                "gym_duckiematrix.gym_environment.GymEnvironment",
+                return_value=environment,
+            ),
+            patch("threading.Event", return_value=completion),
+            pytest.raises(SystemExit) as error,
+        ):
+            run_path(str(script), run_name="__main__")
+        _check_equal(error.value.code, 130)
+        environment.stop.assert_called_once_with()
+        environment.print_profiling.assert_called_once()
+        completion.wait.assert_called_once()
+
+    def test_world_factories_select_native_dtps_transport(self) -> None:
+        """Check native transport selection in both gym environments."""
+        factories = (
+            (GymEnvironment, "gym_environment"),
+            (DuckiematrixDB21JEnv, "db21j_env"),
         )
-        environment._world_input_callback({"session_id": 3, "payload": "c"})
+        for shm_base in ("", "/private/world_io"):
+            for environment_cls, module_name in factories:
+                module_path = f"gym_duckiematrix.{module_name}"
+                with (
+                    patch.dict(os.environ, {"DTSHELL_SHM_PATH": shm_base}),
+                    patch(f"{module_path}.DTPSWorldInput") as input_factory,
+                    patch(f"{module_path}.DTPSWorldOutput") as output_factory,
+                    patch(
+                        "gym_duckiematrix.gym_environment.discover_entities",
+                        return_value=(["vehicle_a"], []),
+                    ),
+                    patch("gym_duckiematrix.db21j_env.DB21J"),
+                    patch("gym_duckiematrix.db21j_env.MapInterpreter"),
+                    patch("gym_duckiematrix.db21j_env.plt"),
+                ):
+                    environment_cls()
+                for factory, suffix in (
+                    (input_factory, ".world_input"),
+                    (output_factory, ".world_output"),
+                ):
+                    factory.assert_called_once_with(
+                        "127.0.0.1",
+                        7501,
+                        "gym",
+                        "",
+                        path_prefix=("robot",),
+                        shm_path=shm_base + suffix if shm_base else None,
+                        shm_only=bool(shm_base),
+                    )
 
-        self.assertEqual(
+    def test_deduplicates_completed_world_sessions(self) -> None:
+        """Drop repeated and stale sessions before calling the user."""
+        environment, world_input, _world_output = _make_environment()
+        callbacks: list[dict] = []
+        environment.attach(callbacks.append)
+
+        world_input.emit({"session_id": 2, "payload": "a"})
+        world_input.emit({"session_id": 2, "payload": "b"})
+        world_input.emit({"session_id": 1, "payload": "stale"})
+        world_input.emit({"session_id": 3, "payload": "c"})
+        world_input.emit({"session_id": 2, "payload": "late-stale"})
+
+        _check_equal(
             callbacks,
             [
                 {"session_id": 2, "payload": "a"},
                 {"session_id": 3, "payload": "c"},
             ],
         )
-        self.assertEqual(environment._last_completed_session_id, 3)
 
     def test_rejects_world_input_without_session_id(self) -> None:
-        environment = _make_environment()
+        """Reject inputs without a world-session identifier."""
+        environment, world_input, _world_output = _make_environment()
+        environment.attach(Mock())
 
-        with self.assertRaisesRegex(
+        with pytest.raises(
             ValueError,
-            "missing the required session_id",
+            match="missing the required session_id",
         ):
-            environment._world_input_callback({"payload": "vehicle-a"})
+            world_input.emit({"payload": "vehicle-a"})
 
     def test_step_publishes_one_global_world_output(self) -> None:
-        environment = _make_environment()
-        environment._world_input.current_session_id = 7
+        """Publish vehicle actions together and omit static entities."""
+        environment, world_input, world_output = _make_environment()
+        world_input.current_session_id = 7
 
         environment.step(
             {
@@ -107,63 +240,66 @@ class GymEnvironmentSessionTests(unittest.TestCase):
             },
         )
 
-        self.assertEqual(len(environment._world_output.published), 1)
-        message = environment._world_output.published[0]
-        self.assertEqual(message["session_id"], 7)
+        _check_equal(len(world_output.published), 1)
+        message = world_output.published[0]
+        _check_equal(message["session_id"], 7)
         entities = message["entities"]
-        self.assertEqual(
+        _check_equal(
             set(entities),
             {"vehicle_a", "vehicle_b"},
         )
-        self.assertEqual(
+        _check_equal(
             entities["vehicle_a"]["differential_pwm"]["left"],
             0.5,
         )
-        self.assertEqual(
+        _check_equal(
             entities["vehicle_a"]["differential_pwm"]["right"],
             0.4,
         )
-        self.assertEqual(
+        _check_equal(
             entities["vehicle_b"]["differential_pwm"]["left"],
             0.4,
         )
-        self.assertEqual(
+        _check_equal(
             entities["vehicle_b"]["differential_pwm"]["right"],
             0.5,
         )
-        self.assertEqual(
+        _check_equal(
             entities["vehicle_a"]["differential_pwm"]["left"],
             0.5,
         )
 
     def test_step_uses_vehicle_entity_output_builder(self) -> None:
-        environment = _make_environment()
-        environment._world_input.current_session_id = 11
+        """Build the vehicle's differential-drive output."""
+        environment, world_input, world_output = _make_environment()
+        world_input.current_session_id = 11
 
         environment.step({"vehicle_a": (0.2, 0.1)})
 
-        message = environment._world_output.published[0]
+        message = world_output.published[0]
         entities = message["entities"]
-        self.assertEqual(
+        _check_equal(
             entities["vehicle_a"]["differential_pwm"]["left"],
             0.2,
         )
-        self.assertEqual(
+        _check_equal(
             entities["vehicle_a"]["differential_pwm"]["right"],
             0.1,
         )
 
     def test_step_requires_a_current_session(self) -> None:
-        environment = _make_environment()
+        """Require an input session before publishing world output."""
+        environment, _world_input, _world_output = _make_environment()
 
-        with self.assertRaisesRegex(RuntimeError, "with a session_id"):
+        with pytest.raises(RuntimeError, match="with a session_id"):
             environment.step({"vehicle_a": (0.5, 0.4)})
 
     def test_step_rejects_non_tuple_actions(self) -> None:
-        environment = _make_environment()
-        environment._world_input.current_session_id = 9
+        """Require a left/right action tuple for each vehicle."""
+        environment, world_input, _world_output = _make_environment()
+        world_input.current_session_id = 9
 
-        with self.assertRaisesRegex(TypeError, "expects each action"):
+        with pytest.raises(TypeError, match="expects each action"):
             environment.step({"vehicle_a": cast("Any", 0.5)})
 
 

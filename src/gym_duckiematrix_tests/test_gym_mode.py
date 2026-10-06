@@ -59,7 +59,6 @@ def _callback(_: dict[str, Any]) -> None:
         environment.static_names,
     )
     if state.count == MAX_COUNT:
-        environment.stop()
         event.set()
         return
     state.start_time = time.time()
@@ -73,19 +72,25 @@ if __name__ == "__main__":
         raise RuntimeError(message)
     environment.attach(_callback)
     state.start_time = time.time()
-    environment.start()
-    completed = event.wait(
-        timeout=(WAIT_TIMEOUT_SECONDS if WAIT_TIMEOUT_SECONDS > 0 else None),
-    )
-    if not completed:
+    try:
+        environment.start()
+        completed = event.wait(
+            timeout=(
+                WAIT_TIMEOUT_SECONDS if WAIT_TIMEOUT_SECONDS > 0 else None
+            ),
+        )
+    except KeyboardInterrupt:
+        logger.info("Interrupted after %d/%d cycles.", state.count, MAX_COUNT)
+        raise SystemExit(130) from None
+    finally:
         environment.stop()
         environment.print_profiling(logger)
+    if not completed:
         message = (
             "Timed out waiting for gym callbacks after "
             f"{WAIT_TIMEOUT_SECONDS:.1f}s "
             f"(completed {state.count}/{MAX_COUNT} cycles)."
         )
         raise TimeoutError(message)
-    environment.print_profiling(logger)
     average_frequency = sum(state.frequencies) / len(state.frequencies)
     logger.info("Average frequency: %.2f Hz", average_frequency)
