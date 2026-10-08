@@ -23,3 +23,5 @@ sphinx
 sphinx-rtd-theme
 
 jupyter
+
+gymnasium==1.2.0
