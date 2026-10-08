@@ -19,6 +19,7 @@ WAIT_TIMEOUT_SECONDS_STRING = os.environ.get("WAIT_TIMEOUT_SECONDS", "0")
 WAIT_TIMEOUT_SECONDS = float(WAIT_TIMEOUT_SECONDS_STRING)
 
 environment = GymEnvironment()
+environment.enable_profiling()
 event = Event()
 logger = logging.getLogger(__name__)
 logger.setLevel(INFO)
@@ -83,6 +84,7 @@ if __name__ == "__main__":
         raise SystemExit(130) from None
     finally:
         environment.stop()
+        environment.print_profiling(logger)
     if not completed:
         message = (
             "Timed out waiting for gym callbacks after "

@@ -14,6 +14,7 @@ from duckietown.sdk.middleware.dtps.components import (
     DTPSWorldInput,
     DTPSWorldOutput,
 )
+from duckietown.sdk.middleware.timing_profiler import TimingProfiler
 from duckietown.sdk.robots import discover_entities
 from duckietown.sdk.robots.duckiebot import DB21M
 from duckietown.sdk.robots.duckiebot.generic import GenericDuckiebot
@@ -50,10 +51,15 @@ class GymEnvironment:
         env.stop()
     """
 
+    _active_callback_output_published: bool
+    _active_callback_session_id: int | None
+    _active_callback_started_at_ms: float | None
+    _active_callback_step_started: bool
     _all_names: list[str]
     _callback: Callable[[dict[str, Any]], None] | None
     _last_completed_session_id: int | None
     _lock = Lock()
+    _profiler: TimingProfiler
     _static_names: list[str]
     _vehicle_names: list[str]
     _vehicles: dict[str, GenericVehicle]
@@ -130,6 +136,8 @@ class GymEnvironment:
         self._callback = None
         self._world_input = self._make_world_input(host, port)
         self._world_output = self._make_world_output(host, port)
+        self._profiler = TimingProfiler("Gym Profiling Information")
+        self._clear_active_callback()
 
     @staticmethod
     def _make_world_input(host: str, port: int) -> WorldInput:
@@ -178,6 +186,23 @@ class GymEnvironment:
         """Names of all static entities (watchtowers, etc.)."""
         return list(self._static_names)
 
+    def enable_profiling(self, *, status: bool = True) -> None:
+        """Enable or disable host-side gym profiling."""
+        self._profiler.enable(status=status)
+        for component in (self._world_input, self._world_output):
+            enable_profiling = getattr(component, "enable_profiling", None)
+            if callable(enable_profiling):
+                enable_profiling(status=status)
+
+    def print_profiling(self, logger: logging.Logger | None = None) -> None:
+        """Log host-side gym profiling information."""
+        active_logger = logger or _logger
+        for component in (self._world_input, self._world_output):
+            print_profiling = getattr(component, "print_profiling", None)
+            if callable(print_profiling):
+                print_profiling(active_logger)
+        self._profiler.log(active_logger)
+
     def attach(self, callback: Callable[[dict[str, Any]], None]) -> None:
         """Attach a callback that fires once per simulation cycle.
 
@@ -205,35 +230,69 @@ class GymEnvironment:
                 ``(left_pwm, right_pwm)``.
 
         """
-        session_id = self._world_input.current_session_id
-        if session_id is None:
-            message = (
-                "Cannot publish WorldOutput before receiving a WorldInput "
-                "with a session_id."
-            )
-            raise RuntimeError(message)
-        world_output = {"session_id": session_id, "entities": {}}
-        entities = world_output["entities"]
-        for name, action in actions.items():
-            vehicle = self._vehicles.get(name)
-            if vehicle is None:
-                continue
-            if (
-                not isinstance(action, tuple)
-                or len(action) != _DIFFERENTIAL_DRIVE_ACTION_SIZE
-            ):
+        with self._profiler.profile("[gym]:step/total"):
+            session_id = self._world_input.current_session_id
+            if session_id is None:
                 message = (
-                    "GymEnvironment.step expects each action to be a "
-                    "(left_pwm, right_pwm) tuple."
+                    "Cannot publish WorldOutput before receiving a WorldInput "
+                    "with a session_id."
                 )
-                raise TypeError(message)
-            entities[name] = self._world_entity_output_to_native(
-                vehicle.make_world_entity_output(
-                    left_pwm=action[0],
-                    right_pwm=action[1],
-                ),
-            )
-        self._world_output.publish(world_output)
+                raise RuntimeError(message)
+            callback_started_at_ms = self._active_callback_started_at_ms
+            if (
+                self._active_callback_session_id == session_id
+                and callback_started_at_ms is not None
+                and not self._active_callback_step_started
+            ):
+                self._active_callback_step_started = True
+                duration_ms = max(
+                    0.0,
+                    time.perf_counter() * 1000 - callback_started_at_ms,
+                )
+                self._profiler.observe(
+                    "[gym]:world-input-callback/to-step",
+                    duration_ms,
+                )
+            with self._profiler.profile("[gym]:step/build-world-output"):
+                world_output = {"session_id": session_id, "entities": {}}
+                entities = world_output["entities"]
+                for name, action in actions.items():
+                    vehicle = self._vehicles.get(name)
+                    if vehicle is None:
+                        continue
+                    if (
+                        not isinstance(action, tuple)
+                        or len(action) != _DIFFERENTIAL_DRIVE_ACTION_SIZE
+                    ):
+                        message = (
+                            "GymEnvironment.step expects each action to be a "
+                            "(left_pwm, right_pwm) tuple."
+                        )
+                        raise TypeError(message)
+                    entity_output = vehicle.make_world_entity_output(
+                        left_pwm=action[0],
+                        right_pwm=action[1],
+                    )
+                    entities[name] = self._world_entity_output_to_native(
+                        entity_output,
+                    )
+            with self._profiler.profile("[gym]:step/publish-world-output"):
+                self._world_output.publish(world_output)
+            callback_started_at_ms = self._active_callback_started_at_ms
+            if (
+                self._active_callback_session_id == session_id
+                and callback_started_at_ms is not None
+                and not self._active_callback_output_published
+            ):
+                self._active_callback_output_published = True
+                duration_ms = max(
+                    0.0,
+                    time.perf_counter() * 1000 - callback_started_at_ms,
+                )
+                self._profiler.observe(
+                    "[gym]:world-input-callback/to-world-output-published",
+                    duration_ms,
+                )
 
     def start(self) -> None:
         """Start the global gym world-input/world-output bridge."""
@@ -250,11 +309,18 @@ class GymEnvironment:
         session_id = world_input.get("session_id")
         return session_id if isinstance(session_id, int) else None
 
+    def _clear_active_callback(self) -> None:
+        self._active_callback_session_id = None
+        self._active_callback_started_at_ms = None
+        self._active_callback_step_started = False
+        self._active_callback_output_published = False
+
     def _world_input_callback(self, world_input: dict[str, Any]) -> None:
         session_id = self._get_session_id(world_input)
         if session_id is None:
             message = "WorldInput is missing the required session_id field."
             raise ValueError(message)
+        callback_started_at_ms = time.perf_counter() * 1000
         with self._lock:
             if (
                 self._last_completed_session_id is not None
@@ -269,8 +335,26 @@ class GymEnvironment:
                 return
             self._last_completed_session_id = session_id
             callback = self._callback
+            if callback is not None:
+                self._active_callback_session_id = session_id
+                self._active_callback_started_at_ms = callback_started_at_ms
+                self._active_callback_step_started = False
+                self._active_callback_output_published = False
         if callback is not None:
-            callback(world_input)
+            try:
+                callback(world_input)
+            finally:
+                duration_ms = max(
+                    0.0,
+                    time.perf_counter() * 1000 - callback_started_at_ms,
+                )
+                self._profiler.observe(
+                    "[gym]:world-input-callback/total",
+                    duration_ms,
+                )
+                with self._lock:
+                    if self._active_callback_session_id == session_id:
+                        self._clear_active_callback()
 
     @staticmethod
     def _rgba_to_native(rgba: Any) -> dict[str, float]:

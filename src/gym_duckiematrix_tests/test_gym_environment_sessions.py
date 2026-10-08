@@ -92,6 +92,43 @@ def _check_equal(actual: object, expected: object) -> None:
 class GymEnvironmentSessionTests(unittest.TestCase):
     """Check session routing and script cleanup through public APIs."""
 
+    def test_profiling_preserves_actions_and_reports_stages(self) -> None:
+        """Report timings without changing accepted world sessions."""
+        environment, world_input, world_output = _make_environment()
+        logger = Mock()
+
+        def on_input(_message: dict[str, Any]) -> None:
+            environment.step({"vehicle_a": (0.2, 0.1)})
+
+        environment.enable_profiling()
+        environment.attach(on_input)
+        environment.start()
+        try:
+            for session_id in (7, 7, 8):
+                world_input.emit({"session_id": session_id})
+        finally:
+            environment.stop()
+        _check_equal(
+            [message["session_id"] for message in world_output.published],
+            [7, 8],
+        )
+        _check_equal(world_input.stopped, 1)
+        _check_equal(world_output.stopped, 1)
+        environment.print_profiling(logger)
+        logger.info.assert_called_once()
+        report = logger.info.call_args.args[-1]
+        expected_stages = (
+            "[gym]:step/total",
+            "[gym]:step/build-world-output",
+            "[gym]:step/publish-world-output",
+            "[gym]:world-input-callback/to-step",
+            "[gym]:world-input-callback/to-world-output-published",
+            "[gym]:world-input-callback/total",
+        )
+        for stage in expected_stages:
+            if stage not in report:
+                pytest.fail(f"Missing profiling stage: {stage}")
+
     def test_gym_mode_stops_on_main_thread_after_last_cycle(self) -> None:
         """Stop the script outside its callback thread."""
         expected_count = 2
