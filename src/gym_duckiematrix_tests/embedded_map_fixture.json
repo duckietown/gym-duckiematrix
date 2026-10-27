@@ -1,0 +1,26 @@
+{
+  "source": "dt-duckiematrix/assets/embedded_maps/big_loop",
+  "frames": {
+    "data": {
+      "map_0/tile_0_0": {"relative_to": null, "unit": "tiles", "pose": {"x": 0.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 4.71238898038469}},
+      "map_0/tile_0_1": {"relative_to": null, "unit": "tiles", "pose": {"x": 0.0, "y": 1.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0}},
+      "map_0/tile_0_5": {"relative_to": null, "unit": "tiles", "pose": {"x": 0.0, "y": 5.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 3.14159265359}},
+      "map_0/tile_1_0": {"relative_to": null, "unit": "tiles", "pose": {"x": 1.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 4.71238898038469}},
+      "map_0/tile_1_1": {"relative_to": null, "unit": "tiles", "pose": {"x": 1.0, "y": 1.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0}},
+      "map_0/tile_5_0": {"relative_to": null, "unit": "tiles", "pose": {"x": 5.0, "y": 0.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 0.0}},
+      "map_0/tile_5_5": {"relative_to": null, "unit": "tiles", "pose": {"x": 5.0, "y": 5.0, "z": 0.0, "roll": 0.0, "pitch": 0.0, "yaw": 1.5707963267948966}}
+    }
+  },
+  "tiles": {
+    "data": {
+      "map_0/tile_0_0": {"type": "curve"},
+      "map_0/tile_0_1": {"type": "straight"},
+      "map_0/tile_0_5": {"type": "curve"},
+      "map_0/tile_1_0": {"type": "straight"},
+      "map_0/tile_1_1": {"type": "floor"},
+      "map_0/tile_5_0": {"type": "curve"},
+      "map_0/tile_5_5": {"type": "curve"}
+    }
+  },
+  "tile_info": {"data": {"map_0": {"tile_size": {"x": 0.585, "y": 0.585}}}}
+}
