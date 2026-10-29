@@ -2,6 +2,7 @@
 !setup.py
 !src
 src/*.egg-info
+!examples
 !Makefile*
 !requirements*
 !.compmake.rc

@@ -1,18 +1,17 @@
-version: 2
+version: 2.1
 workflows:
   version: 2
   test:
     jobs:
-      - test-3.7
-      - test-3.8
+      - test-py312
 jobs:
-  test-3.7: &test-template
+  test-py312:
     environment:
       COLUMNS: 160
       # default is /usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
       PATH: /root/.local/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     docker:
-      - image: python:3.7
+      - image: python:3.12
     working_directory: ~/repo
     steps: &steps
       - checkout
@@ -20,6 +19,8 @@ jobs:
           name: Install deps
           command: |
             echo PATH=$PATH
+            apt-get update
+            apt-get install -y libturbojpeg0
             pip install codecov pipdeptree
             pip install -q --user --upgrade -r requirements.txt
 
@@ -30,18 +31,9 @@ jobs:
             pip list | tee artifacts/pip-list.txt
             pipdeptree | tee artifacts/pipdeptree.txt
       - run:
-          name: setup.py develop
+          name: Install Gym-Duckiematrix
           command: |
-            python setup.py develop --prefix ~/.local --no-deps
-
-      - run:
-          name: Make docs
-          command: |
-            make docs
-      - run:
-          name: Notebooks
-          command: |
-            make -C notebooks cleanup all
+            python -m pip install --user --no-deps .
 
       - run:
           name: Run tests
@@ -76,9 +68,3 @@ jobs:
           when: always
           command: |
             codecov
-
-
-  test-3.8:
-    <<: *test-template
-    docker:
-      - image: python:3.8

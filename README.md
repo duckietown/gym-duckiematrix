@@ -1,314 +1,162 @@
+# Gym-Duckiematrix
 
-# Getting Started
-To get started with the gym API you need to do the following setup : 
-1. Make sure you have python 3.11 installed, other versions might or might not work but 3.11 has been tested.
-2. Install system dependencies :  
-    ```bash
-    sudo apt-get install -y libturbojpeg
-    ```
-3. Install python dependencies :  
-    ```bash
-    pip install gymnasium numpy dtps-http
-    ```
-    Install duckietown-sdk using the `ente` branch :  
-    ```bash
-    pip install git+https://github.com/duckietown/duckietown-sdk.git@ente
-    ```
-    Install the duckiematrix gym :  
-    ```bash
-    pip install git+https://github.com/duckietown/gym-duckiematrix.git
-    ```
-4. Launch the duckiematrix using `dts` :  
-    ```bash
-    dts matrix run --standalone --embedded --no-tutorial --map loop
-    ```
-    This command launches the engine locally (`--standalone`), using the default maps (`--embedded`), skips the tutorial pop-up (`--no-tutorial`) and uses the default map called loop (`--map loop`).  
-    It is possible to specify different configurations (eg: load different maps), [see the documentation for more details](https://docs.duckietown.com/ente/duckietown-manual/50-duckiematrix/getting-started/duckiematrix-first-steps.html).  
+Run synchronized Duckiematrix simulations through either a multi-entity
+callback API or a single-Duckiebot Gymnasium environment.
 
-5. Create the gym environment, optionally you can use gymnasium built-in wrapper [`TimeLimit`](https://gymnasium.farama.org/api/wrappers/misc_wrappers/#gymnasium.wrappers.TimeLimit) if you want to impose a maximum number of steps on a trajectory.   
-    The following code example creates the gym environment, wraps it using `TimeLimit` and executes a predefined number of random rollouts :     
-    ```python
-    from gymnasium.wrappers import TimeLimit
-    from gym_duckiematrix.DB21J import DuckiematrixDB21JEnv
+## Requirements
 
-    def execute_random_rollout(env):
-        obs, info = env.reset()
-        done = False
-        while not done:
-            action = env.action_space.sample()
-            obs, reward, terminated, truncated, info = env.step(action)
-            done = terminated or truncated
+Use Python 3.12 or newer, `duckietown-sdk>=0.3.0,<0.4`, and
+`duckietown-messages>=0.1.0,<0.2`. Package installation requires compatible
+SDK and messages releases to be available on PyPI.
 
-    env = TimeLimit(
-        DuckiematrixDB21JEnv(
-            entity_name="map_0/vehicle_0",
-            out_of_road_penalty=-10.0,
-            headless=False,
-            camera_height=480,
-            camera_width=640
-        ),
-        max_episode_steps=100,
-    )
-    nb_random_rollouts_for_testing_purposes = 2
-    try:
-        for _ in range(nb_random_rollouts_for_testing_purposes):
-            execute_random_rollout(env)
-    except Exception as e:
-        print("An error occurred:", e)
-    finally:
-        env.close()
-    ```
-Note :
-The `headless` parameter controls whether a graphical window opens to display frames in real time during execution.  
-Setting it to `False` disables the GUI entirely (e.g: ideal for running code on a cluster).  
-Setting it to `True` enables visualization, which is useful for debugging but may slow down execution.  
+On Linux, install the `libturbojpeg0` system package. From this checkout:
 
-The default reward function encourages the duckie to move forward along the lane and penalizes deviations from the lane center.  
-If lane lookup fails, the agent receives an out-of-road penalty and a termination signal.  
-Feel free to define your own reward function by sub-classing `DuckiematrixDB21JEnv` and write your own `reward_fn`.  
-
-If you do not want to impose a maximum number of steps, then simply create the environment without the TimeLimit wrapper :  
-```python
-env = DuckiematrixDB21JEnv(
-    entity_name="map_0/vehicle_0",
-    out_of_road_penalty=-10.0,
-    headless=False,
-    camera_height=480,
-    camera_width=640
-)
+```bash
+python3 -m pip install -e .
 ```
----
 
-![CircleCI](https://circleci.com/gh/duckietown/template-library/tree/v1.svg?style=svg)
-[Details.](https://circleci.com/gh/duckietown/template-library/tree/v1)
-
-![codecov](https://codecov.io/gh/duckietown/template-library/branch/v1/graph/badge.svg)
-
-
-See [details here](https://codecov.io/gh/duckietown/template-library).
-
-
-# Template for pure Python libraries in Duckietown
-
-This template provides a boilerplate repository for developing Python libraries in Duckietown.
-
-We have the following features:
-
-* Unit-tests using [Nose].
-* Building/testing in Docker environment locally.
-* Integration with [CircleCI] for automated testing.
-* Integration with [CodeCov] for displaying coverage result.
-* Integration with [Sphinx] to build code docs. (So far, only built locally.)
-* [Jupyter] notebooks, which are run also in CircleCI as tests.
-* Version bump using [Bumpversion].
-* Code formatting using [Black].
-* Command-line program for using the library.
-
-[CodeCov]: https://codecov.io/gh/duckietown
-[Sphinx]:  https://www.sphinx-doc.org/en/master/
-[Black]: https://github.com/psf/black
-[CircleCI]: https://circleci.com/gh/duckietown
-[Jupyter]:  https://jupyter.org/
-[Bumpversion]: https://github.com/peritus/bumpversion
-[Nose]: https://nose.readthedocs.io/en/latest/
-
-## Anatomy of the repo
-
-This repository describes a library called "`duckietown_pondcleaner`" and there is one command-line tool
-called `dt-pc-demo.`
-
-*Warning*: Do not remove files/features just because you don't understand. Ask instead.
-See: [Chesterson's fence](https://en.wikipedia.org/wiki/Wikipedia:Chesterton%27s_fence).
-
-### Meta-files
-
-* `.gitignore`: Files ignore by Git.
-
-* `.dtproject`: ...
-
-* `.bumpversion.cfg`: Configuration for bumpversion
-
-* `Makefile`: ...
-
-### Python packaging
-
-* `requirements.txt`: Contains the *pinned* versions of your requirement that
-  are used to run tests.
-
-* `MANIFEST.in`: Deselects the tests to be included in the egg.
-
-* `setup.py`: Containes meta information, definition of the scripts, and
-  the dependencies information.
-
-### Python code
-
-* `src/` - This is the path that you should set as "sources root" in your tool
-
-* `src/duckietown_pondcleaner`: Contains the code.
-
-* `src/duckietown_pondcleaner/__init__.py`: Contains the `__version__` library.
-
-* `src/duckietown_pondcleaner_tests`: Contains the tests - not included in the egg.
-
-### Docker testing
-
-These are files to build and run a testing container.
-
-* `.dockerignore`: Describes what files go in the docker container.
-
-* `Dockerfile`: ...
-
-### Sphinx
-
-* `src/conf.py`: Sphinx settings
-
-* `src/index.rst`: Sphinx main file
-
-* `src/duckietown_pondcleaner/index.rst`: Documentation for the package
-
-
-### Coverage
-
-* `.coveragerc`: Options for code coverage.
-
-
-### Notebooks
-
-* `notebooks`: Notebooks that are run also as a test.
-
-* `notebooks-extra`: Other notebooks (not run as test)
-
-* `notebooks/*.ipynb`: The notebooks themselves.
-
-
------------
-
------------
-
-
-## Cloning/forking/customizing
-
-### Fork this repository
-
-Use the fork button in the top-right corner of the Github page
-to fork this template repository.
-
-### Create a new repository
-
-Create a new repository on Github while specifying the newly
-forked template repository as a template for your new repository.
-
-
-### Fill in the blanks
-
-Build a library by following these steps:
-
-- Clone the newly created repository;
-- Place your Python packages inside `src/`;
-- List the python dependencies in the file `dependencies.txt`;
-- Update the appropriate section in the file `setup.py`;
-
-Make sure that there are no other remains:
-
-    grep -r . pondcleaner
-
-Update the branch names in `README.md`.
-
-### Other set up (for admins)
-
-The following are necessary steps for admins to do:
-
-1. Activate on CircleCI. Make one build successful.
-
-2. Activate on CodeCov. Get the `CODECOV_TOKEN`. Put this token in CircleCI environment.
-
------------
-
------------
-
-
-## How to use this library
-
-
-
-### Test the code
-
-Test the code using Docker by:
-
-    make test-docker
-
-This runs the test using a Docker container built from scratch
-with the pinned dependencies in `requirements.txt`.
-This is equivalent to what is run on CircleCI.
-
-To run the tests natively, use:
-
-    make test
-
-
-### Development
-
-We assume you have already setup a Python virtual environment.
-
-Then we suggest you run:
-
-    python setup.py develop
-
-This will install the library in an editable way (rather than copying the sources somewhere else).
-
-If you don't want to install the deps, do:
-
-    python setup.py develop  --no-deps
-
-For example, this is done in the Dockerfile so that
-we know we are only using the dependencies in `requirements.txt` with the
-exact pinned version.
-
-<!--Run `pip install -U ./` from the repository directory to build and
-install the library. To avoid installing a temporary library system-wide,
-we suggest you make a temporary directory `dist`, pass the flag `-t ./dist`
-to the `pip` command above, this will tell pip to install the library
-inside `dist`. You can then use `PYTHON_PATH=./dist python ...` to run a
-Python interpreter that will pick up the library installed in `./dist`.--->
-
-
-### Adding tests
-
-To add another tests, add files with the name `test_*py` in the
-package `duckietown_podcleaner_tests`. The name is important.
-
-Tip: make sure that the tests are actually run looking at the coverage results.
-
-### Notes on using the notebooks
-
-Always clean the notebooks before committing them:
-
-    make -C notebooks cleanup
-
-If you don't think you can be diligent, then add the notebooks using Git LFS.
-
-### Releasing a new version
-
-#### Updating the version
-
-The first step is to change the version and tag the repo.
-**DO NOT** change the version manually; use the CLI tool `bumpversion` instead.
-
-The tool can be called by:
-
-    make bump    # bump the version, tag the tree
-
-If you need to include the version in a new file, list it inside the file `.bumpversion.cfg` using the
-syntax `[bumpversion:file:<FILE_PATH>]`.
-
-#### Releasing the package
-
-The next step is to upload the package to PyPy.
-We use [twine]. Invoke using:
-
-    make upload  # upload to PyPy
-
-For this step, uou need to have admin permissions on PyPy.
-
-
-[twine]: https://pypi.org/project/twine/
+Start a compatible Duckiematrix engine and renderer in Gym mode:
+
+```bash
+dts matrix run --gym --standalone --embedded --no-tutorial --map loop
+```
+
+The engine and renderer must support the global `robot/gym/in` and
+`robot/gym/out` session protocol used by the companion
+[SDK integration](https://github.com/duckietown/duckietown-sdk/pull/6).
+
+## Multiple Vehicles
+
+`GymEnvironment` discovers vehicles and static entities. Its callback
+receives one world-input dictionary per simulation session, with sensor
+payloads under `entities`. Publish all vehicle actions together from that
+callback:
+
+```python
+from threading import Event
+
+from gym_duckiematrix import GymEnvironment
+
+environment = GymEnvironment()
+
+def on_world_input(world_input):
+    actions = dict.fromkeys(environment.duckiebot_names, (0.2, 0.2))
+    environment.step(actions)
+
+environment.attach(on_world_input)
+try:
+    environment.start()
+    Event().wait(10)
+finally:
+    environment.stop()
+```
+
+Actions are `(left_pwm, right_pwm)` tuples keyed by vehicle name. Static
+entities are ignored. Duplicate and older sessions do not invoke the
+callback. Call `stop()` explicitly when finished. Starting a stopped
+environment resets its local session guards. After an Engine restart,
+restart the Python client to establish fresh connections. A lower session
+ID alone is treated as stale traffic; the protocol has no Engine-generation
+identifier. Recreate the environment if the Engine's entity list or map
+changed.
+
+The finite-cycle demo reports frequency between completed cycles, excluding
+startup latency:
+
+```bash
+MAX_COUNT=100 WAIT_TIMEOUT_SECONDS=30 python3 examples/gym_mode.py
+```
+
+## Single-Duckiebot Gymnasium API
+
+```python
+from gymnasium.wrappers import TimeLimit
+
+from gym_duckiematrix.db21j_env import DuckiematrixDB21JEnv
+
+environment = TimeLimit(
+    DuckiematrixDB21JEnv(entity_name="map_0/vehicle_0", timeout=10.0),
+    max_episode_steps=100,
+)
+try:
+    observation, info = environment.reset()
+    terminated = truncated = False
+    while not (terminated or truncated):
+        action = environment.action_space.sample()
+        observation, reward, terminated, truncated, info = environment.step(
+            action,
+        )
+finally:
+    environment.close()
+```
+
+The default environment opens no window and does not import Matplotlib.
+With `render_mode=None`, `render()` returns `None`.
+Use `render_mode="human"` for a lazily created camera window or
+`render_mode="rgb_array"` to return the current RGB image from `render()`.
+The rollout example explicitly selects human rendering.
+
+Set `camera_width` and `camera_height` to the renderer's image dimensions;
+the defaults are 640 by 480. Both accept positive Python or NumPy integers.
+These options define the observation space and validate incoming images;
+they do not resize images or reconfigure the renderer. Actions must contain
+two finite values; values outside `[-1, 1]` are clipped before applying the
+existing 0.4 motor scaling.
+
+The environment consumes an image and pose from the same world-input
+session. Map-layer and world-state reads use
+the positive `timeout` in seconds; unavailable data raises `TimeoutError`,
+and an incomplete session raises `ValueError` identifying the entity and
+session. The reward uses forward lane progress and lateral lane deviation;
+leaving a supported lane terminates the episode with the configured
+`out_of_road_penalty`.
+
+Run `python3 examples/db21j_rollout.py` for a bounded random rollout. The
+obsolete `gym_duckiematrix.DB21J` and `gym_duckiematrix.db21j` modules have
+been removed. Import the class from `gym_duckiematrix.db21j_env`; replace
+the legacy `headless` option with `render_mode`.
+
+## Shared-Memory Transport
+
+Both environments default to network DTPS on `127.0.0.1:7501`, regardless
+of `DTSHELL_SHM_PATH`. Select native shared memory explicitly with
+`GymEnvironment(shm_path="/tmp/duckiematrix-gym")` or the same keyword on
+`DuckiematrixDB21JEnv`. The selected transport is logged at INFO level.
+Give the Engine and Python process the same base path. The examples accept
+the separate, opt-in `GYM_SHM_PATH` variable:
+
+```bash
+export GYM_SHM_PATH=/tmp/duckiematrix-gym
+dts matrix run --gym --standalone --embedded --no-tutorial --map loop \
+    --shm-path "$GYM_SHM_PATH"
+python3 examples/gym_mode.py
+```
+
+The environment variable affects these examples, not the environment
+constructors. An unset or empty `GYM_SHM_PATH` selects network transport in
+the examples. DTPS uses separate
+`<base>.world_input` and `<base>.world_output` channels. Both processes must
+see the same backing files; containerized runs need a shared mount. This
+requires the native shared-memory support in `dtps-http>=1.6.1,<2` and
+matching engine/renderer changes. Shared-memory errors are reported without
+falling back to network transport.
+
+## Profiling
+
+Call `GymEnvironment.enable_profiling()` and `print_profiling()` to report
+application and transport timings. With the matching SDK review fixes,
+tables show lifetime means alongside median and p95 latency from the last
+200 samples. The sample windows are labeled explicitly. The retained first
+WorldInput can be old, so its Engine-send-to-receive delay is a startup age,
+not steady-state transport latency. Do not compare lifetime means alone.
+
+Three-way intersection rewards use the corrected lane geometry in the
+matching SDK checkout or release; the SDK regressions cover all six routes
+and their orientation in the shipped sandbox map.
+
+## Development Tests
+
+Install `requirements.txt` after the matching SDK/messages packages are
+available, then run `make test` from this checkout. The tests collect and
+run without an engine. Live demos are in `examples/` and execute only when
+run as scripts. Use `ruff check .` for the lint gate.
