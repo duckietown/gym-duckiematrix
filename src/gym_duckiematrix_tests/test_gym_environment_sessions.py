@@ -236,23 +236,25 @@ class GymEnvironmentSessionTests(unittest.TestCase):
         size = interpreter.road_tile_size
         diagonal = math.sqrt(0.5)
         for tile in interpreter.drivable_tiles:
+            # lane midpoints, travel directions (right-hand traffic)
             if tile["kind"] == "curve":
                 lanes = [
                     (-0.5 + 0.7 * diagonal, 0.5 - 0.7 * diagonal,
-                     -diagonal, -diagonal),
-                    (-0.5 + 0.3 * diagonal, 0.5 - 0.3 * diagonal,
                      diagonal, diagonal),
+                    (-0.5 + 0.3 * diagonal, 0.5 - 0.3 * diagonal,
+                     -diagonal, -diagonal),
                 ]
             else:
-                lanes = [(-0.2, 0.0, 0.0, 1.0), (0.2, 0.0, 0.0, -1.0)]
+                lanes = [(-0.2, 0.0, 0.0, -1.0), (0.2, 0.0, 0.0, 1.0)]
             cosine = math.cos(tile["angle"])
             sine = math.sin(tile["angle"])
             for local_x, local_z, local_dx, local_dz in lanes:
+                # the renderer puts the tile's corner at its frame pose
                 world_x = size * (
-                    tile["pose"]["x"] + local_x * cosine - local_z * sine
+                    tile["pose"]["x"] + 0.5 + local_x * cosine - local_z * sine
                 )
                 world_y = size * (
-                    tile["pose"]["y"] + local_x * sine + local_z * cosine
+                    tile["pose"]["y"] + 0.5 + local_x * sine + local_z * cosine
                 )
                 direction_x = local_dx * cosine - local_dz * sine
                 direction_y = local_dx * sine + local_dz * cosine
