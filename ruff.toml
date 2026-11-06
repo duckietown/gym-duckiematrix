@@ -1,0 +1,12 @@
+line-length = 79
+target-version = "py312"
+
+[lint]
+select = ["ALL"]
+
+[lint.per-file-ignores]
+"src/conf.py" = ["A001"]
+"examples/*.py" = ["INP001"]
+
+[lint.pycodestyle]
+max-doc-length = 72

@@ -1,3 +1,5 @@
+"""Gym-Duckiematrix tests."""
+
 import logging
 
 logging.basicConfig()
