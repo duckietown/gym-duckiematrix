@@ -6,7 +6,7 @@ from pathlib import Path
 from setuptools import find_packages, setup  # type: ignore[import-untyped]
 
 package_name = "gym-duckiematrix"
-library_webpage = "<LIBRARY_WEB_PAGE>"
+library_webpage = "https://github.com/duckietown/gym-duckiematrix"
 maintainer = "Liam Paull"
 maintainer_email = "liam@duckietown.com"
 short_description = "This is the gym environment wrapper for the Duckiematrix"
