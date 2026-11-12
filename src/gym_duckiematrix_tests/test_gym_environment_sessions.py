@@ -19,6 +19,11 @@ from duckietown.sdk.utils.lane_position import (
     LanePositionCalculator,
     MapInterpreter,
 )
+from duckietown_messages.geometry_3d import (
+    Position,
+    Quaternion,
+    Transformation,
+)
 from duckietown_messages.simulation import WorldEntityOutput
 
 from gym_duckiematrix.db21j_env import DuckiematrixDB21JEnv
@@ -209,6 +214,42 @@ class GymEnvironmentSessionTests(unittest.TestCase):
                 with pytest.raises(ValueError, match="'pose' reset option"):
                     environment.reset(options={"pose": bad})
             publish.assert_not_called()
+
+    def test_db21j_reset_rejects_degenerate_poses(self) -> None:
+        """Reject non-finite coordinates and an all-zero quaternion."""
+        environment = DuckiematrixDB21JEnv.__new__(DuckiematrixDB21JEnv)
+        publish = Mock()
+        nan = float("nan")
+        infinity = float("inf")
+        zeros = {"w": 0.0, "x": 0.0, "y": 0.0, "z": 0.0}
+        degenerate = (
+            {"x": nan, "y": 0.0, "yaw": 0.0},
+            # math.cos(inf) would raise "math domain error" on its own
+            {"x": 0.0, "y": 0.0, "yaw": infinity},
+            {"position": {"x": nan, "y": 0.0, "z": 0.0}},
+            {
+                "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "rotation": zeros,
+            },
+            Transformation(
+                position=Position(x=infinity, y=0.0, z=0.0),
+                rotation=Quaternion(w=1.0, x=0.0, y=0.0, z=0.0),
+            ),
+            # the engine reads an all-zero quaternion as the identity
+            Transformation(
+                position=Position(x=0.0, y=0.0, z=0.0),
+                rotation=Quaternion(w=0.0, x=0.0, y=0.0, z=0.0),
+            ),
+        )
+        with patch.multiple(
+            environment, create=True,
+            _publish_world_output=publish, _wait_for_world_state=Mock(),
+            _session_id=1, _observation=None, _pose=None,
+        ):
+            for bad in degenerate:
+                with pytest.raises(ValueError, match="'pose' reset option"):
+                    environment.reset(options={"pose": bad})
+        publish.assert_not_called()
 
     def test_db21j_reset_publishes_the_pose(self) -> None:
         """Publish a reset pose that decodes back to the same pose."""

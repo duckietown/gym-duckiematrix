@@ -47,6 +47,34 @@ _GYM_WORLD_TOPIC_NAME = "gym"
 DEFAULT_CAMERA_WIDTH = 640
 DEFAULT_CAMERA_HEIGHT = 480
 _ACTION_SIZE = 2
+
+
+def _validated_reset_pose(pose: Transformation) -> Transformation:
+    """Return ``pose``, or raise if the engine cannot use it.
+
+    A non-finite coordinate propagates into the engine's physics
+    state, and an all-zero quaternion has no orientation: the engine
+    divides by a zero norm, falls back to 1.0 and silently reads the
+    identity rotation. Both are rejected here, where the caller can
+    still see which option was wrong.
+    """
+    position = pose.position
+    rotation = pose.rotation
+    coordinates = (position.x, position.y, position.z)
+    components = (rotation.w, rotation.x, rotation.y, rotation.z)
+    if not all(math.isfinite(v) for v in (*coordinates, *components)):
+        message = (
+            "The 'pose' reset option must be finite; got position "
+            f"{coordinates} and quaternion {components}."
+        )
+        raise ValueError(message)
+    if not any(components):
+        message = (
+            "The 'pose' reset option must have a non-zero quaternion; "
+            "got (0, 0, 0, 0), which has no orientation."
+        )
+        raise ValueError(message)
+    return pose
 _logger = logging.getLogger(__name__)
 
 
@@ -273,39 +301,56 @@ class DuckiematrixDB21JEnv(Env):
           environment stores the robot's pose;
         - a mapping with ``x``, ``y``, ``yaw`` (rad) and optionally
           ``z`` (default 0): a robot standing on the ground.
+
+        Raises:
+            ValueError: If ``pose`` is none of those forms, holds a
+            non-finite number, or has an all-zero quaternion.
+
         """
         if isinstance(pose, Transformation):
-            return pose
+            return _validated_reset_pose(pose)
         if isinstance(pose, Mapping):
             if "position" in pose:
                 position = pose["position"]
                 rotation = pose.get("rotation") or {"w": 1.0}
-                return Transformation(
-                    position=Position(
-                        x=float(position["x"]),
-                        y=float(position["y"]),
-                        z=float(position.get("z", 0.0)),
-                    ),
-                    rotation=Quaternion(
-                        w=float(rotation.get("w", 1.0)),
-                        x=float(rotation.get("x", 0.0)),
-                        y=float(rotation.get("y", 0.0)),
-                        z=float(rotation.get("z", 0.0)),
+                return _validated_reset_pose(
+                    Transformation(
+                        position=Position(
+                            x=float(position["x"]),
+                            y=float(position["y"]),
+                            z=float(position.get("z", 0.0)),
+                        ),
+                        rotation=Quaternion(
+                            w=float(rotation.get("w", 1.0)),
+                            x=float(rotation.get("x", 0.0)),
+                            y=float(rotation.get("y", 0.0)),
+                            z=float(rotation.get("z", 0.0)),
+                        ),
                     ),
                 )
             if {"x", "y", "yaw"} <= pose.keys():
-                half_yaw = 0.5 * float(pose["yaw"])
-                return Transformation(
-                    position=Position(
-                        x=float(pose["x"]),
-                        y=float(pose["y"]),
-                        z=float(pose.get("z", 0.0)),
-                    ),
-                    rotation=Quaternion(
-                        w=math.cos(half_yaw),
-                        x=0.0,
-                        y=0.0,
-                        z=math.sin(half_yaw),
+                x = float(pose["x"])
+                y = float(pose["y"])
+                z = float(pose.get("z", 0.0))
+                yaw = float(pose["yaw"])
+                # check before the trigonometry: math.cos(inf) raises
+                # "math domain error", which says nothing useful here
+                if not all(math.isfinite(v) for v in (x, y, z, yaw)):
+                    message = (
+                        "The 'pose' reset option must be finite; got "
+                        f"x={x}, y={y}, z={z}, yaw={yaw}."
+                    )
+                    raise ValueError(message)
+                half_yaw = 0.5 * yaw
+                return _validated_reset_pose(
+                    Transformation(
+                        position=Position(x=x, y=y, z=z),
+                        rotation=Quaternion(
+                            w=math.cos(half_yaw),
+                            x=0.0,
+                            y=0.0,
+                            z=math.sin(half_yaw),
+                        ),
                     ),
                 )
         message = (
