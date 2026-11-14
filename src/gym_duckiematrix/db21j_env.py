@@ -7,6 +7,7 @@ from __future__ import annotations
 import logging
 import math
 import time
+from collections.abc import Mapping
 from importlib import import_module
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +22,11 @@ from duckietown.sdk.utils.lane_position import (
     LanePositionCalculator,
     MapInterpreter,
     NotInLane,
+)
+from duckietown_messages.geometry_3d import (
+    Position,
+    Quaternion,
+    Transformation,
 )
 from gymnasium import Env, spaces
 
@@ -41,6 +47,34 @@ _GYM_WORLD_TOPIC_NAME = "gym"
 DEFAULT_CAMERA_WIDTH = 640
 DEFAULT_CAMERA_HEIGHT = 480
 _ACTION_SIZE = 2
+
+
+def _validated_reset_pose(pose: Transformation) -> Transformation:
+    """Return ``pose``, or raise if the engine cannot use it.
+
+    A non-finite coordinate propagates into the engine's physics
+    state, and an all-zero quaternion has no orientation: the engine
+    divides by a zero norm, falls back to 1.0 and silently reads the
+    identity rotation. Both are rejected here, where the caller can
+    still see which option was wrong.
+    """
+    position = pose.position
+    rotation = pose.rotation
+    coordinates = (position.x, position.y, position.z)
+    components = (rotation.w, rotation.x, rotation.y, rotation.z)
+    if not all(math.isfinite(v) for v in (*coordinates, *components)):
+        message = (
+            "The 'pose' reset option must be finite; got position "
+            f"{coordinates} and quaternion {components}."
+        )
+        raise ValueError(message)
+    if not any(components):
+        message = (
+            "The 'pose' reset option must have a non-zero quaternion; "
+            "got (0, 0, 0, 0), which has no orientation."
+        )
+        raise ValueError(message)
+    return pose
 _logger = logging.getLogger(__name__)
 
 
@@ -233,7 +267,98 @@ class DuckiematrixDB21JEnv(Env):
             payload["state_reset_flag"] = {
                 "data": state_reset_flag.data,
             }
+        state_reset_pose = entity_output.state_reset_pose
+        if state_reset_pose is not None:
+            position = state_reset_pose.position
+            rotation = state_reset_pose.rotation
+            payload["state_reset_pose"] = {
+                "position": {
+                    "x": position.x,
+                    "y": position.y,
+                    "z": position.z,
+                },
+                "rotation": {
+                    "w": rotation.w,
+                    "x": rotation.x,
+                    "y": rotation.y,
+                    "z": rotation.z,
+                },
+            }
+            if state_reset_pose.source is not None:
+                payload["state_reset_pose"]["source"] = state_reset_pose.source
         return payload
+
+    @staticmethod
+    def _reset_pose_from_option(pose: object) -> Transformation:
+        """Read the ``pose`` reset option.
+
+        Accepted forms, all in the frame and convention of the pose the
+        engine reports:
+
+        - a ``Transformation``;
+        - a mapping with ``position`` (``x``, ``y``, ``z``) and
+          ``rotation`` (quaternion ``w``, ``x``, ``y``, ``z``), as the
+          environment stores the robot's pose;
+        - a mapping with ``x``, ``y``, ``yaw`` (rad) and optionally
+          ``z`` (default 0): a robot standing on the ground.
+
+        Raises:
+            ValueError: If ``pose`` is none of those forms, holds a
+            non-finite number, or has an all-zero quaternion.
+
+        """
+        if isinstance(pose, Transformation):
+            return _validated_reset_pose(pose)
+        if isinstance(pose, Mapping):
+            if "position" in pose:
+                position = pose["position"]
+                rotation = pose.get("rotation") or {"w": 1.0}
+                return _validated_reset_pose(
+                    Transformation(
+                        position=Position(
+                            x=float(position["x"]),
+                            y=float(position["y"]),
+                            z=float(position.get("z", 0.0)),
+                        ),
+                        rotation=Quaternion(
+                            w=float(rotation.get("w", 1.0)),
+                            x=float(rotation.get("x", 0.0)),
+                            y=float(rotation.get("y", 0.0)),
+                            z=float(rotation.get("z", 0.0)),
+                        ),
+                    ),
+                )
+            if {"x", "y", "yaw"} <= pose.keys():
+                x = float(pose["x"])
+                y = float(pose["y"])
+                z = float(pose.get("z", 0.0))
+                yaw = float(pose["yaw"])
+                # check before the trigonometry: math.cos(inf) raises
+                # "math domain error", which says nothing useful here
+                if not all(math.isfinite(v) for v in (x, y, z, yaw)):
+                    message = (
+                        "The 'pose' reset option must be finite; got "
+                        f"x={x}, y={y}, z={z}, yaw={yaw}."
+                    )
+                    raise ValueError(message)
+                half_yaw = 0.5 * yaw
+                return _validated_reset_pose(
+                    Transformation(
+                        position=Position(x=x, y=y, z=z),
+                        rotation=Quaternion(
+                            w=math.cos(half_yaw),
+                            x=0.0,
+                            y=0.0,
+                            z=math.sin(half_yaw),
+                        ),
+                    ),
+                )
+        message = (
+            "The 'pose' reset option must be a Transformation, a mapping "
+            "with 'position' (and 'rotation'), or a mapping with 'x', 'y' "
+            f"and 'yaw'; got {pose!r}."
+        )
+        raise ValueError(message)
 
     @staticmethod
     def _get_info() -> dict[str, Any]:
@@ -457,13 +582,16 @@ class DuckiematrixDB21JEnv(Env):
         right_pwm: float,
         *,
         reset_state: bool,
+        reset_pose: Transformation | None = None,
     ) -> None:
         if self._session_id is None:
             self._wait_for_world_state()
+        extra = {} if reset_pose is None else {"reset_pose": reset_pose}
         entity_output = self.robot.make_world_entity_output(
             left_pwm=left_pwm,
             right_pwm=right_pwm,
             reset_state=reset_state,
+            **extra,
         )
         self._world_output.publish(
             {
@@ -499,17 +627,26 @@ class DuckiematrixDB21JEnv(Env):
         Args:
             seed: Optional RNG seed (passed to super). Not used
                 directly by this implementation.
-            options: Optional reset options. Not used directly
-                by this implementation.
+            options: Optional reset options. ``options["pose"]`` puts
+                the robot at that pose instead of its initial one (see
+                ``_reset_pose_from_option`` for the accepted forms).
 
         Returns:
             A ``(observation, info)`` tuple.
 
         """
         super().reset(seed=seed, options=options)
+        reset_pose = None
+        if options and options.get("pose") is not None:
+            reset_pose = self._reset_pose_from_option(options["pose"])
         if self._session_id is None:
             self._wait_for_world_state()
-        self._publish_world_output(0.0, 0.0, reset_state=True)
+        self._publish_world_output(
+            0.0,
+            0.0,
+            reset_state=True,
+            reset_pose=reset_pose,
+        )
         self._wait_for_world_state()
         if self._observation is None or self._pose is None:
             return np.ndarray(()), {}

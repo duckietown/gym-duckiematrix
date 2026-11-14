@@ -14,10 +14,17 @@ from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+from duckietown.sdk.robots.duckiebot import DB21J
 from duckietown.sdk.utils.lane_position import (
     LanePositionCalculator,
     MapInterpreter,
 )
+from duckietown_messages.geometry_3d import (
+    Position,
+    Quaternion,
+    Transformation,
+)
+from duckietown_messages.simulation import WorldEntityOutput
 
 from gym_duckiematrix.db21j_env import DuckiematrixDB21JEnv
 from gym_duckiematrix.gym_environment import GymEnvironment
@@ -166,6 +173,117 @@ class GymEnvironmentSessionTests(unittest.TestCase):
                 with pytest.raises(ValueError, match="two finite"):
                     environment.step(np.array(action))
             publish.assert_not_called()
+
+    def test_db21j_reset_reads_pose_options(self) -> None:
+        """Accept x/y/yaw, a stored pose, or a Transformation."""
+        environment = DuckiematrixDB21JEnv.__new__(DuckiematrixDB21JEnv)
+        publish = Mock()
+        with patch.multiple(
+            environment, create=True,
+            _publish_world_output=publish, _wait_for_world_state=Mock(),
+            _session_id=1, _observation=None, _pose=None,
+        ):
+            environment.reset(
+                options={"pose": {"x": 1.3, "y": 0.42, "yaw": math.pi / 2}},
+            )
+            pose = publish.call_args.kwargs["reset_pose"]
+            _check_equal(
+                (pose.position.x, pose.position.y, pose.position.z),
+                (1.3, 0.42, 0.0),
+            )
+            np.testing.assert_allclose(
+                (pose.rotation.w, pose.rotation.z),
+                (math.sqrt(0.5), math.sqrt(0.5)),
+            )
+            if publish.call_args.kwargs["reset_state"] is not True:
+                pytest.fail("A reset with a pose must set the reset flag.")
+            stored = {
+                "timestamp": 3.0,
+                "position": {"x": 0.5, "y": 0.6, "z": 0.0},
+                "rotation": {"w": 0.0, "x": 0.0, "y": 0.0, "z": 1.0},
+            }
+            environment.reset(options={"pose": stored})
+            pose = publish.call_args.kwargs["reset_pose"]
+            _check_equal((pose.position.x, pose.rotation.z), (0.5, 1.0))
+            environment.reset(options={"pose": pose})
+            _check_equal(publish.call_args.kwargs["reset_pose"], pose)
+            environment.reset()
+            _check_equal(publish.call_args.kwargs["reset_pose"], None)
+            publish.reset_mock()
+            for bad in ({"x": 1.0, "y": 2.0}, (1.0, 2.0, 0.0), "home"):
+                with pytest.raises(ValueError, match="'pose' reset option"):
+                    environment.reset(options={"pose": bad})
+            publish.assert_not_called()
+
+    def test_db21j_reset_rejects_degenerate_poses(self) -> None:
+        """Reject non-finite coordinates and an all-zero quaternion."""
+        environment = DuckiematrixDB21JEnv.__new__(DuckiematrixDB21JEnv)
+        publish = Mock()
+        nan = float("nan")
+        infinity = float("inf")
+        zeros = {"w": 0.0, "x": 0.0, "y": 0.0, "z": 0.0}
+        degenerate = (
+            {"x": nan, "y": 0.0, "yaw": 0.0},
+            # math.cos(inf) would raise "math domain error" on its own
+            {"x": 0.0, "y": 0.0, "yaw": infinity},
+            {"position": {"x": nan, "y": 0.0, "z": 0.0}},
+            {
+                "position": {"x": 0.0, "y": 0.0, "z": 0.0},
+                "rotation": zeros,
+            },
+            Transformation(
+                position=Position(x=infinity, y=0.0, z=0.0),
+                rotation=Quaternion(w=1.0, x=0.0, y=0.0, z=0.0),
+            ),
+            # the engine reads an all-zero quaternion as the identity
+            Transformation(
+                position=Position(x=0.0, y=0.0, z=0.0),
+                rotation=Quaternion(w=0.0, x=0.0, y=0.0, z=0.0),
+            ),
+        )
+        with patch.multiple(
+            environment, create=True,
+            _publish_world_output=publish, _wait_for_world_state=Mock(),
+            _session_id=1, _observation=None, _pose=None,
+        ):
+            for bad in degenerate:
+                with pytest.raises(ValueError, match="'pose' reset option"):
+                    environment.reset(options={"pose": bad})
+        publish.assert_not_called()
+
+    def test_db21j_reset_publishes_the_pose(self) -> None:
+        """Publish a reset pose that decodes back to the same pose."""
+        environment = DuckiematrixDB21JEnv.__new__(DuckiematrixDB21JEnv)
+        world_output = _FakeWorldOutput()
+        robot = DB21J("map_0/vehicle_0", simulated=True, gym_mode=True)
+        with patch.multiple(
+            environment, create=True,
+            robot=robot, _world_output=world_output,
+            _entity_name="map_0/vehicle_0", _wait_for_world_state=Mock(),
+            _session_id=1, _observation=None, _pose=None,
+        ):
+            environment.reset(
+                options={"pose": {"x": 1.3, "y": 0.42, "yaw": -2.0}},
+            )
+            environment.reset()
+        with_pose, without_pose = (
+            WorldEntityOutput.model_validate(
+                message["entities"]["map_0/vehicle_0"],
+            )
+            for message in world_output.published
+        )
+        position = with_pose.state_reset_pose.position
+        rotation = with_pose.state_reset_pose.rotation
+        _check_equal((position.x, position.y, position.z), (1.3, 0.42, 0.0))
+        np.testing.assert_allclose(
+            (rotation.w, rotation.x, rotation.y, rotation.z),
+            (math.cos(-1.0), 0.0, 0.0, math.sin(-1.0)),
+        )
+        _check_equal(
+            with_pose.state_reset_flag.data,
+            without_pose.state_reset_flag.data,
+        )
+        _check_equal(without_pose.state_reset_pose, None)
 
     def test_db21j_validates_camera_and_render_options(self) -> None:
         """Validate options before creating transport resources."""
