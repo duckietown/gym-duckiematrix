@@ -3,6 +3,7 @@
 __all__ = ["GymEnvironment"]
 
 import logging
+import math
 import time
 from collections.abc import Callable
 from threading import Lock
@@ -14,7 +15,11 @@ from duckietown.sdk.middleware.dtps.components import (
     DTPSWorldOutput,
 )
 from duckietown.sdk.middleware.timing_profiler import TimingProfiler
-from duckietown.sdk.robots import discover_entities
+from duckietown.sdk.robots import (
+    EnvironmentInfo,
+    discover_entities,
+    discover_environments,
+)
 from duckietown.sdk.robots.duckiebot import DB21M
 from duckietown.sdk.robots.duckiebot.generic import GenericDuckiebot
 from duckietown.sdk.robots.generic_vehicle import GenericVehicle
@@ -57,6 +62,7 @@ class GymEnvironment:
     _active_callback_step_started: bool
     _all_names: list[str]
     _callback: Callable[[dict[str, Any]], None] | None
+    _environments: tuple[EnvironmentInfo, ...]
     _last_completed_session_id: int | None
     _lock = Lock()
     _profiler: TimingProfiler
@@ -96,34 +102,8 @@ class GymEnvironment:
                 f"{vehicle_cls!r}"
             )
             raise TypeError(message)
-        _max_attempts = 30
-        _delay = 2
-        for _attempt in range(1, _max_attempts + 1):
-            try:
-                vehicle_names, static_names = discover_entities(host, port)
-            except Exception:
-                if _attempt == _max_attempts:
-                    raise
-                _logger.info(
-                    "Engine not ready yet (attempt %d/%d), retrying in %.0fs "
-                    "...",
-                    _attempt,
-                    _max_attempts,
-                    _delay,
-                )
-                time.sleep(_delay)
-                continue
-            if vehicle_names:
-                break
-            if _attempt < _max_attempts:
-                _logger.info(
-                    "Engine reachable but no vehicles registered yet "
-                    "(attempt %d/%d), retrying in %.0fs ...",
-                    _attempt,
-                    _max_attempts,
-                    _delay,
-                )
-                time.sleep(_delay)
+        environments, vehicle_names, static_names = self._discover(host, port)
+        self._environments = environments
         self._vehicle_names = vehicle_names
         self._static_names = static_names
         self._all_names = vehicle_names + static_names
@@ -146,6 +126,75 @@ class GymEnvironment:
         _logger.info("Gym transport: %s", shm_path or f"DTPS {host}:{port}")
         self._profiler = TimingProfiler("Gym Profiling Information")
         self._clear_active_callback()
+
+    @staticmethod
+    def _discover(
+        host: str, port: int,
+    ) -> tuple[tuple[EnvironmentInfo, ...], list[str], list[str]]:
+        _max_attempts = 30
+        _delay = 2
+        for _attempt in range(1, _max_attempts + 1):
+            try:
+                vehicle_names, static_names = discover_entities(host, port)
+                environments = discover_environments(host, port)
+            except OSError:
+                if _attempt == _max_attempts:
+                    raise
+                _logger.info(
+                    "Engine not ready yet (attempt %d/%d), retrying in %.0fs "
+                    "...",
+                    _attempt,
+                    _max_attempts,
+                    _delay,
+                )
+                time.sleep(_delay)
+                continue
+            expected_vehicles = {
+                key for environment in environments
+                for key in environment.vehicle_keys
+            }
+            ready = GymEnvironment._validate_discovery(
+                environments, vehicle_names, expected_vehicles,
+            )
+            if vehicle_names and ready:
+                if environments:
+                    vehicle_names = [
+                        key for environment in environments
+                        for key in environment.vehicle_keys
+                    ]
+                return environments, vehicle_names, static_names
+            if _attempt < _max_attempts:
+                _logger.info(
+                    "Engine reachable but not all vehicles registered yet "
+                    "(attempt %d/%d), retrying in %.0fs ...",
+                    _attempt,
+                    _max_attempts,
+                    _delay,
+                )
+                time.sleep(_delay)
+        if environments:
+            message = "Timed out waiting for all advertised replica vehicles."
+            raise TimeoutError(message)
+        return environments, vehicle_names, static_names
+
+    @staticmethod
+    def _validate_discovery(
+        environments: tuple[EnvironmentInfo, ...],
+        vehicle_names: list[str],
+        expected_vehicles: set[str],
+    ) -> bool:
+        if not environments and any(
+            name.startswith("environment_") for name in vehicle_names
+        ):
+            message = (
+                "Replicated vehicles require map/environments metadata. "
+                "Rebuild the Engine before connecting."
+            )
+            raise ValueError(message)
+        if environments and set(vehicle_names) - expected_vehicles:
+            message = "Discovered vehicles disagree with the replica manifest."
+            raise ValueError(message)
+        return not environments or set(vehicle_names) == expected_vehicles
 
     @staticmethod
     def _make_world_input(
@@ -176,6 +225,16 @@ class GymEnvironment:
             shm_path=shm_path,
             shm_only=shm_path is not None,
         )
+
+    @property
+    def environments(self) -> tuple[EnvironmentInfo, ...]:
+        """Ordered replica mappings, or empty for a legacy run."""
+        return self._environments
+
+    @property
+    def vehicles(self) -> dict[str, GenericVehicle]:
+        """SDK vehicles for building commands without extra streams."""
+        return dict(self._vehicles)
 
     @property
     def vehicle_names(self) -> list[str]:
@@ -242,6 +301,54 @@ class GymEnvironment:
                 ``(left_pwm, right_pwm)``.
 
         """
+        commands = {}
+        for name, action in actions.items():
+            vehicle = self._vehicles.get(name)
+            if vehicle is None:
+                continue
+            if (
+                not isinstance(action, tuple)
+                or len(action) != _DIFFERENTIAL_DRIVE_ACTION_SIZE
+            ):
+                message = (
+                    "GymEnvironment.step expects each action to be a "
+                    "(left_pwm, right_pwm) tuple."
+                )
+                raise TypeError(message)
+            commands[name] = vehicle.make_world_entity_output(
+                left_pwm=action[0], right_pwm=action[1],
+            )
+        self.step_commands(commands)
+
+    def _validate_commands(
+        self, commands: dict[str, WorldEntityOutput],
+    ) -> None:
+        unknown = set(commands) - set(self._vehicles)
+        if unknown:
+            message = f"Unknown vehicle commands: {sorted(unknown)!r}."
+            raise ValueError(message)
+        if self._environments and set(commands) != set(self._vehicle_names):
+            message = "Replicated steps require commands for every vehicle."
+            raise ValueError(message)
+        for command in commands.values():
+            if not isinstance(command, WorldEntityOutput):
+                message = "step_commands requires WorldEntityOutput values."
+                raise TypeError(message)
+            pwm = command.differential_pwm
+            if pwm is not None and not (
+                math.isfinite(pwm.left) and math.isfinite(pwm.right)
+            ):
+                message = "Motor commands must be finite."
+                raise ValueError(message)
+
+    def step_commands(self, commands: dict[str, WorldEntityOutput]) -> None:
+        """Publish vehicle commands and reset flags in one batch.
+
+        Replicated runs require one command per advertised vehicle.
+        No strict run binding or reset-only transitions are supported.
+        Reset flags retain current Engine behavior.
+        """
+        self._validate_commands(commands)
         with self._profiler.profile("[gym]:step/total"):
             session_id = self._active_callback_session_id
             if session_id is None:
@@ -268,25 +375,11 @@ class GymEnvironment:
                     duration_ms,
                 )
             with self._profiler.profile("[gym]:step/build-world-output"):
-                world_output = {"session_id": session_id, "entities": {}}
+                world_output: dict[str, Any] = {
+                    "session_id": session_id, "entities": {},
+                }
                 entities = world_output["entities"]
-                for name, action in actions.items():
-                    vehicle = self._vehicles.get(name)
-                    if vehicle is None:
-                        continue
-                    if (
-                        not isinstance(action, tuple)
-                        or len(action) != _DIFFERENTIAL_DRIVE_ACTION_SIZE
-                    ):
-                        message = (
-                            "GymEnvironment.step expects each action to be a "
-                            "(left_pwm, right_pwm) tuple."
-                        )
-                        raise TypeError(message)
-                    entity_output = vehicle.make_world_entity_output(
-                        left_pwm=action[0],
-                        right_pwm=action[1],
-                    )
+                for name, entity_output in commands.items():
                     entities[name] = self._world_entity_output_to_native(
                         entity_output,
                     )
@@ -371,6 +464,16 @@ class GymEnvironment:
                     self._last_completed_session_id,
                 )
                 return
+            if self._environments:
+                entities = world_input.get("entities")
+                if not isinstance(entities, dict) or any(
+                    not isinstance(entities.get(name), dict)
+                    for name in self._vehicle_names
+                ):
+                    message = (
+                        "WorldInput is missing advertised replica vehicles."
+                    )
+                    raise ValueError(message)
             self._last_completed_session_id = session_id
             callback = self._callback
             if callback is not None:

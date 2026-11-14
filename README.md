@@ -67,6 +67,53 @@ startup latency:
 MAX_COUNT=100 WAIT_TIMEOUT_SECONDS=30 python3 examples/gym_mode.py
 ```
 
+## Parallel Environments
+
+Use matching SDK, Gym, Engine and Renderer builds. Start the Engine with
+the desired number of replicas; Python discovers that count and mapping:
+
+```bash
+dts matrix run --gym --standalone --embedded --no-tutorial --map loop \
+    --environments 4 --cameras-only
+MAX_COUNT=100 WAIT_TIMEOUT_SECONDS=30 python3 examples/gym_mode.py
+```
+
+`GymEnvironment.environments` exposes the SDK's immutable replica
+manifest in numeric index order, preserving keys such as
+`environment_2/map_0/vehicle_0`. `vehicle_names` follows that order rather
+than sorting replica names lexicographically. Constructor discovery waits
+for every advertised vehicle and rejects missing or inconsistent metadata.
+Each replicated `step(actions)` must command every advertised vehicle;
+its input callback requires every vehicle's entity payload in that session.
+The source `loop` map uses DB21M, matching the bridge's default SDK model.
+
+The bridge also accepts `WorldEntityOutput` models built by its existing
+SDK vehicles. Inside the same world-input callback, use either
+`step(actions)` or this command path once for the complete batch:
+
+```python
+vehicles = environment.vehicles
+commands = {}
+for name, vehicle in vehicles.items():
+    commands[name] = vehicle.make_world_entity_output(
+        left_pwm=0.0, right_pwm=0.0, reset_state=True,
+    )
+environment.step_commands(commands)
+```
+
+Both paths use the same global session and output transport, including
+when SHM is selected. `environment.vehicles` returns a copy of the vehicle
+mapping without starting additional sensor or actuator streams.
+
+This supports controlled parallel diagnostics, not a Gymnasium vector
+training API. The Engine does not yet enforce an exclusive coordinator,
+bind messages to a run ID, or implement reset-only transitions. Its current
+reset flag resets a vehicle and then integrates it. Do not interpret that
+as `NEXT_STEP` autoreset, wrap independent scalar clients in
+`SyncVectorEnv`/`AsyncVectorEnv` against one Engine, or rely on independent
+episode/reset guarantees. Run exactly one global Gym publisher and restart
+the owned simulation and client together after an uncertain step failure.
+
 ## Single-Duckiebot Gymnasium API
 
 ```python
@@ -110,6 +157,11 @@ and an incomplete session raises `ValueError` identifying the entity and
 session. The reward uses forward lane progress and lateral lane deviation;
 leaving a supported lane terminates the episode with the configured
 `out_of_road_penalty`.
+
+The scalar wrapper rejects replicated Engines before creating publishers.
+Use one `GymEnvironment` bridge for parallel diagnostics. Both APIs accept
+`host` and `port` for discovery, SDK map components and world transports,
+for example `DuckiematrixDB21JEnv(host="engine.example", port=7601)`.
 
 Run `python3 examples/db21j_rollout.py` for a bounded random rollout. The
 obsolete `gym_duckiematrix.DB21J` and `gym_duckiematrix.db21j` modules have
