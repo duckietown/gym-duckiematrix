@@ -8,12 +8,13 @@ from collections.abc import Callable
 from pathlib import Path
 from runpy import run_path
 from threading import Event, Thread, current_thread
-from types import SimpleNamespace
+from types import MappingProxyType, SimpleNamespace
 from typing import Any, cast
 from unittest.mock import Mock, patch
 
 import numpy as np
 import pytest
+from duckietown.sdk.robots import EnvironmentInfo
 from duckietown.sdk.utils.lane_position import (
     LanePositionCalculator,
     MapInterpreter,
@@ -71,15 +72,52 @@ class _FakeWorldOutput:
         self.has_started = False
 
 
-def _make_environment() -> tuple[
+def _replica_manifest(count: int = 2) -> tuple[EnvironmentInfo, ...]:
+    environments = []
+    for index in range(count):
+        identifier = f"environment_{index}"
+        sources = {
+            f"{identifier}/map_0": "map_0",
+            f"{identifier}/map_0/vehicle_0": "map_0/vehicle_0",
+        }
+        environments.append(
+            EnvironmentInfo(
+                id=identifier, index=index, source_map="loop",
+                isolation="overlap",
+                tile_map_keys=(f"{identifier}/map_0",),
+                vehicle_keys=(f"{identifier}/map_0/vehicle_0",),
+                entity_keys=tuple(sources),
+                source_keys=MappingProxyType(sources),
+                pose=MappingProxyType(dict.fromkeys(
+                    ("x", "y", "z", "roll", "pitch", "yaw"), 0.0,
+                )),
+            ),
+        )
+    return tuple(environments)
+
+
+def _make_environment(
+    environments: tuple[EnvironmentInfo, ...] = (),
+) -> tuple[
     GymEnvironment, _FakeWorldInput, _FakeWorldOutput,
 ]:
     world_input = _FakeWorldInput()
     world_output = _FakeWorldOutput()
+    vehicles = (
+        [key for replica in environments for key in replica.vehicle_keys]
+        if environments else ["vehicle_a", "vehicle_b"]
+    )
     with (
         patch(
             "gym_duckiematrix.gym_environment.discover_entities",
-            return_value=(["vehicle_a", "vehicle_b"], ["watchtower"]),
+            return_value=(
+                list(reversed(vehicles)) if environments else vehicles,
+                ["watchtower"],
+            ),
+        ),
+        patch(
+            "gym_duckiematrix.gym_environment.discover_environments",
+            return_value=environments,
         ),
         patch(
             "gym_duckiematrix.gym_environment.DTPSWorldInput",
@@ -102,6 +140,192 @@ def _check_equal(actual: object, expected: object) -> None:
 
 class GymEnvironmentSessionTests(unittest.TestCase):
     """Check session routing and script cleanup through public APIs."""
+
+    def setUp(self) -> None:
+        """Keep unit-test constructors independent of an Engine."""
+        for module in ("gym_environment", "db21j_env"):
+            self.enterContext(patch(
+                f"gym_duckiematrix.{module}.discover_environments",
+                return_value=(),
+            ))
+
+    def test_replica_discovery_preserves_numeric_manifest_order(self) -> None:
+        """Build the complete batch in SDK manifest order."""
+        replicas = _replica_manifest(12)
+        environment, _world_input, _world_output = _make_environment(replicas)
+        expected = [replica.vehicle_keys[0] for replica in replicas]
+        _check_equal(environment.environments, replicas)
+        _check_equal(environment.vehicle_names, expected)
+
+    def test_replica_discovery_waits_for_all_advertised_vehicles(self) -> None:
+        """Retry missing vehicles and reject invalid metadata."""
+        replicas = _replica_manifest()
+        names = [replica.vehicle_keys[0] for replica in replicas]
+        with (
+            patch(
+                "gym_duckiematrix.gym_environment.discover_environments",
+                return_value=replicas,
+            ),
+            patch(
+                "gym_duckiematrix.gym_environment.discover_entities",
+                side_effect=[([names[0]], []), (names[::-1], [])],
+            ) as discover,
+            patch("gym_duckiematrix.gym_environment.time.sleep") as sleep,
+            patch("gym_duckiematrix.gym_environment.DTPSWorldInput"),
+            patch("gym_duckiematrix.gym_environment.DTPSWorldOutput"),
+        ):
+            environment = GymEnvironment(host="engine.test", port=7601)
+            _check_equal(environment.environments, replicas)
+            _check_equal(environment.vehicle_names, names)
+        _check_equal(discover.call_count, 2)
+        discover.assert_called_with("engine.test", 7601)
+        sleep.assert_called_once_with(2)
+        for manifest, discovered, message in (
+            ((), names, "require map/environments"),
+            (replicas, [*names, "unexpected"], "disagree"),
+        ):
+            with (
+                patch(
+                    "gym_duckiematrix.gym_environment.discover_environments",
+                    return_value=manifest,
+                ),
+                patch(
+                    "gym_duckiematrix.gym_environment.discover_entities",
+                    return_value=(discovered, []),
+                ),
+                patch("gym_duckiematrix.gym_environment.time.sleep") as sleep,
+                pytest.raises(ValueError, match=message),
+            ):
+                GymEnvironment(host="engine.test", port=7601)
+            sleep.assert_not_called()
+
+    def test_replica_discovery_timeout_precedes_transports(self) -> None:
+        """Do not connect a partially discovered replica batch."""
+        replicas = _replica_manifest()
+        with (
+            patch(
+                "gym_duckiematrix.gym_environment.discover_environments",
+                return_value=replicas,
+            ),
+            patch(
+                "gym_duckiematrix.gym_environment.discover_entities",
+                return_value=([replicas[0].vehicle_keys[0]], []),
+            ),
+            patch("gym_duckiematrix.gym_environment.time.sleep"),
+            patch("gym_duckiematrix.gym_environment.DTPSWorldInput") as inputs,
+            patch(
+                "gym_duckiematrix.gym_environment.DTPSWorldOutput",
+            ) as outputs,
+            pytest.raises(TimeoutError, match="all advertised"),
+        ):
+            GymEnvironment()
+        inputs.assert_not_called()
+        outputs.assert_not_called()
+
+    def test_replica_commands_keep_reset_and_callback_session(self) -> None:
+        """Send one full command batch using existing SDK vehicles."""
+        replicas = _replica_manifest()
+        environment, world_input, world_output = _make_environment(replicas)
+        commands = {
+            name: vehicle.make_world_entity_output(
+                left_pwm=0.2, right_pwm=0.1, reset_state=True,
+            )
+            for name, vehicle in environment.vehicles.items()
+        }
+
+        def on_input(_message: dict[str, Any]) -> None:
+            world_input.current_session_id = 99
+            environment.step_commands(commands)
+
+        environment.attach(on_input)
+        world_input.emit({
+            "session_id": 7,
+            "entities": {name: {} for name in environment.vehicle_names},
+        })
+        _check_equal(len(world_output.published), 1)
+        message = world_output.published[0]
+        _check_equal(message["session_id"], 7)
+        _check_equal(set(message["entities"]), set(environment.vehicle_names))
+        for entity in message["entities"].values():
+            _check_equal(entity["state_reset_flag"], {"data": True})
+            _check_equal(
+                entity["differential_pwm"], {"left": 0.2, "right": 0.1},
+            )
+
+    def test_replica_steps_reject_partial_and_invalid_commands(self) -> None:
+        """Validate full finite command batches before publishing."""
+        environment, world_input, world_output = _make_environment(
+            _replica_manifest(),
+        )
+        world_input.current_session_id = 7
+        vehicles = environment.vehicles
+        commands = {
+            name: vehicle.make_world_entity_output(
+                left_pwm=0.2, right_pwm=0.1,
+            )
+            for name, vehicle in vehicles.items()
+        }
+        first = environment.vehicle_names[0]
+        pwm = commands[first].differential_pwm
+        if pwm is None:
+            pytest.fail("The SDK did not build a motor command.")
+        nonfinite = commands[first].model_copy(update={
+            "differential_pwm": pwm.model_copy(update={"left": math.nan}),
+        })
+        for invalid, error, message in (
+            ({first: commands[first]}, ValueError, "every vehicle"),
+            ({**commands, "unknown": commands[first]}, ValueError, "Unknown"),
+            ({**commands, first: object()}, TypeError, "WorldEntityOutput"),
+            ({**commands, first: nonfinite}, ValueError, "finite"),
+        ):
+            with pytest.raises(error, match=message):
+                environment.step_commands(cast("Any", invalid))
+        with pytest.raises(ValueError, match="every vehicle"):
+            environment.step({first: (0.2, 0.1)})
+        _check_equal(world_output.published, [])
+
+    def test_replica_input_requires_every_vehicle(self) -> None:
+        """Reject incomplete input without consuming its session."""
+        environment, world_input, _world_output = _make_environment(
+            _replica_manifest(),
+        )
+        callback = Mock()
+        environment.attach(callback)
+        for entities in (None, {}, {environment.vehicle_names[0]: {}}):
+            with pytest.raises(ValueError, match="missing advertised"):
+                world_input.emit({"session_id": 7, "entities": entities})
+        callback.assert_not_called()
+        message = {
+            "session_id": 7,
+            "entities": {name: {} for name in environment.vehicle_names},
+        }
+        world_input.emit(message)
+        world_input.emit(message)
+        callback.assert_called_once_with(message)
+
+    def test_scalar_rejects_replicas_before_creating_components(self) -> None:
+        """Direct replicated users to the single global batch bridge."""
+        for manifest, entity_name in (
+            (_replica_manifest(), "map_0/vehicle_0"),
+            ((), "environment_0/map_0/vehicle_0"),
+        ):
+            with (
+                patch(
+                    "gym_duckiematrix.db21j_env.discover_environments",
+                    return_value=manifest,
+                ) as discover,
+                patch("gym_duckiematrix.db21j_env.DB21J") as robot,
+                patch("gym_duckiematrix.db21j_env.DTPSWorldInput") as inputs,
+                patch("gym_duckiematrix.db21j_env.DTPSWorldOutput") as outputs,
+                pytest.raises(ValueError, match="scalar environment"),
+            ):
+                DuckiematrixDB21JEnv(
+                    entity_name=entity_name, host="engine.test", port=7601,
+                )
+            discover.assert_called_once_with("engine.test", 7601)
+            robot.assert_not_called()
+            inputs.assert_not_called()
+            outputs.assert_not_called()
 
     def test_db21j_configurable_images_and_lazy_rendering(self) -> None:
         """Delay plot creation until human rendering is requested."""
@@ -555,14 +779,16 @@ class GymEnvironmentSessionTests(unittest.TestCase):
                     patch("gym_duckiematrix.db21j_env.DB21J"),
                     patch("gym_duckiematrix.db21j_env.MapInterpreter"),
                 ):
-                    environment_cls(shm_path=shm_base)
+                    environment_cls(
+                        shm_path=shm_base, host="engine.test", port=7601,
+                    )
                 for factory, suffix in (
                     (input_factory, ".world_input"),
                     (output_factory, ".world_output"),
                 ):
                     factory.assert_called_once_with(
-                        "127.0.0.1",
-                        7501,
+                        "engine.test",
+                        7601,
                         "gym",
                         "",
                         path_prefix=("robot",),

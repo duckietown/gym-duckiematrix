@@ -15,6 +15,7 @@ from duckietown.sdk.middleware.dtps.components import (
     DTPSWorldInput,
     DTPSWorldOutput,
 )
+from duckietown.sdk.robots import discover_environments
 from duckietown.sdk.robots.duckiebot import DB21J
 from duckietown.sdk.utils.jpeg import JPEG
 from duckietown.sdk.utils.lane_position import (
@@ -77,6 +78,8 @@ class DuckiematrixDB21JEnv(Env):
         camera_height: int | np.integer[Any] = DEFAULT_CAMERA_HEIGHT,
         render_mode: str | None = None,
         shm_path: str | None = None,
+        host: str = _ENGINE_HOST,
+        port: int = _ENGINE_PORT,
     ) -> None:
         """Duckiematrix DB21J environment.
 
@@ -92,6 +95,8 @@ class DuckiematrixDB21JEnv(Env):
             render_mode: ``human`` opens a window lazily; ``rgb_array``
                 returns images from render(). Defaults to no window.
             shm_path: SHM base path; None selects network DTPS.
+            host: Engine host for discovery, map and world transports.
+            port: Engine DTPS port. Defaults to 7501.
 
         """
         if not math.isfinite(timeout) or timeout <= 0:
@@ -115,6 +120,13 @@ class DuckiematrixDB21JEnv(Env):
         if shm_path is not None and not shm_path.strip():
             message = "shm_path must be nonempty or None."
             raise ValueError(message)
+        environments = discover_environments(host, port)
+        if environments or entity_name.startswith("environment_"):
+            message = (
+                "The scalar environment cannot control a replicated Engine. "
+                "Use one GymEnvironment for the complete global action batch."
+            )
+            raise ValueError(message)
         self.metadata = {"render_modes": ["human", "rgb_array"]}
         self.render_mode = render_mode
         self._timeout = timeout
@@ -128,12 +140,14 @@ class DuckiematrixDB21JEnv(Env):
         self._observation_received = False
         self._pose = None
         self._pose_received = False
-        self.robot = DB21J(entity_name, simulated=True, gym_mode=True)
-        self._world_input = self._make_world_input(shm_path)
-        self._world_output = self._make_world_output(shm_path)
+        self.robot = DB21J(
+            entity_name, simulated=True, gym_mode=True, host=host, port=port,
+        )
+        self._world_input = self._make_world_input(shm_path, host, port)
+        self._world_output = self._make_world_output(shm_path, host, port)
         _logger.info(
             "Gym transport: %s",
-            shm_path or f"DTPS {_ENGINE_HOST}:{_ENGINE_PORT}",
+            shm_path or f"DTPS {host}:{port}",
         )
         try:
             self._start_components()
@@ -145,7 +159,10 @@ class DuckiematrixDB21JEnv(Env):
                 np.uint8,
             )
             map_data = self._read_map()
-            self._map_interpreter = MapInterpreter(map_data)
+            tile_map_key, _, _ = entity_name.rpartition("/")
+            self._map_interpreter = MapInterpreter(
+                map_data, tile_map_key=tile_map_key or "map_0",
+            )
             self._lane_position_calculator = LanePositionCalculator(
                 self._map_interpreter,
             )
@@ -174,11 +191,14 @@ class DuckiematrixDB21JEnv(Env):
         return layers
 
     @staticmethod
-    def _make_world_input(shm_base: str | None) -> WorldInput:
+    def _make_world_input(
+        shm_base: str | None,
+        host: str = _ENGINE_HOST, port: int = _ENGINE_PORT,
+    ) -> WorldInput:
         shm_path = shm_base + ".world_input" if shm_base else None
         return DTPSWorldInput(
-            _ENGINE_HOST,
-            _ENGINE_PORT,
+            host,
+            port,
             _GYM_WORLD_TOPIC_NAME,
             "",
             path_prefix=("robot",),
@@ -187,11 +207,14 @@ class DuckiematrixDB21JEnv(Env):
         )
 
     @staticmethod
-    def _make_world_output(shm_base: str | None) -> WorldOutput:
+    def _make_world_output(
+        shm_base: str | None,
+        host: str = _ENGINE_HOST, port: int = _ENGINE_PORT,
+    ) -> WorldOutput:
         shm_path = shm_base + ".world_output" if shm_base else None
         return DTPSWorldOutput(
-            _ENGINE_HOST,
-            _ENGINE_PORT,
+            host,
+            port,
             _GYM_WORLD_TOPIC_NAME,
             "",
             path_prefix=("robot",),
