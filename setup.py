@@ -53,7 +53,7 @@ version = get_version_from_source("src/gym_duckiematrix/__init__.py")
 
 install_requires = [
     "duckietown-messages>=0.1.2,<0.2",
-    "duckietown-sdk>=0.3.3,<0.4",
+    "duckietown-sdk>=0.4.0,<0.5",
     "gymnasium>=1.2.0,<2",
     "matplotlib",
     "numpy",
